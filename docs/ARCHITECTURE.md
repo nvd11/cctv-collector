@@ -10,7 +10,7 @@ graph TD
         IPC["TP-LINK TL-IPC44AW<br/>(10.0.1.20:554)"]
         
         subgraph RADXA_NODE["采集节点: Radxa (10.0.1.105)"]
-            COLLECTOR["CCTV Collector Service<br/>(Java 17 / Watchdog)"]
+            COLLECTOR["CCTV Collector Service<br/>(Java 21 / Watchdog)"]
             FFMPEG["FFmpeg Subprocess<br/>(-c copy -f segment)"]
             COLLECTOR -->|管理生命周期| FFMPEG
         end
@@ -40,9 +40,65 @@ graph TD
 
 ---
 
-## 2. 采集服务内部核心架构
+## 2. 整体工程结构：Maven 多模块 Monorepo
 
-`cctv-collector` 内部划分为四大核心管理器：
+为了统一版本管理、共享公共代码、简化 CI/CD 流水线，本项目采用 **Maven 多模块（Multi-Module）** 架构，将原本计划拆分为两个独立仓库的 `cctv-collector` 与 `cctv-batch-uploader` 合并为单一 Monorepo。
+
+### 2.1 模块划分与职责
+
+所有动态运行参数（如 RTSP 地址、存储路径、切片时长等）统一由 **K3s ConfigMap / Secret** 声明并注入环境变量，两个服务均直接读取环境变量，各司其职、彻底解耦，拒绝过度工程与多余抽象。
+
+| 模块 | 职责 | 核心配置来源 | 部署节点 |
+| :--- | :--- | :--- | :--- |
+| **`cctv-collector-service`** | 视频流采集守护服务：RTSP 拉流、FFmpeg 进程管理、切片缓冲、看门狗重连 | K3s ConfigMap (`CCTV_RTSP_URL`, `CCTV_BUFFER_DIR` 等) | Radxa K3s 节点 (`10.0.1.105`) |
+| **`cctv-uploader-service`** | 批量上传服务：扫描缓冲目录、WebDAV 上传至 Alist、云端网盘归档、过期清理 | K3s ConfigMap / Secret (`ALIST_URL`, `ALIST_TOKEN` 等) | Radxa K3s 节点 (`10.0.1.105`) |
+
+### 2.2 根目录结构
+
+```text
+cctv-collector/                          # 根项目（Parent POM）
+├── pom.xml                              # 父 POM：聚合两个微服务子模块、统一依赖与插件版本
+├── README.md
+├── docs/
+│   ├── REQUIREMENTS.md
+│   └── ARCHITECTURE.md
+├── k8s/                                 # K3s GitOps 配置目录
+│   ├── configmap.yaml                   # 统一运行配置（路径、时长、URL）
+│   ├── secret.yaml                      # 敏感信息（Alist Token 等）
+│   ├── pv-buffer.yaml                   # 共享持久卷
+│   ├── cctv-collector-deployment.yaml   # 采集端编排
+│   └── cctv-uploader-deployment.yaml    # 上传端编排
+│
+├── cctv-collector-service/              # 【Svc1】视频流采集守护服务
+│   ├── pom.xml
+│   └── src/main/java/com/gateman/cctv/collector/
+│       ├── CctvCollectorApp.java        # 服务入口
+│       ├── config/                      # 自身直接读取 ConfigMap 环境变量
+│       ├── supervisor/                  # FFmpeg 进程看门狗与磁盘熔断
+│       └── hook/                        # 优雅停机钩子
+│
+└── cctv-uploader-service/               # 【Svc2】批量上传网盘服务
+    ├── pom.xml
+    └── src/main/java/com/gateman/cctv/uploader/
+        ├── CctvUploaderApp.java         # 服务入口
+        ├── config/                      # 自身直接读取 ConfigMap/Secret 环境变量
+        ├── scanner/                     # 缓冲目录扫描器（识别已闭合切片）
+        ├── client/                      # Alist WebDAV 客户端封装
+        └── cleaner/                     # 过期文件清理与磁盘轮转
+```
+
+### 2.3 极简双微服务优势
+
+1. **零冗余依赖**：彻底移除空泛的 `common` 模块，两服务各自独立，构建仅需 0.9 秒。
+2. **云原生纯粹解耦**：所有共用契约（目录路径、切片分段）统一由 **K3s ConfigMap** 作为唯一真实来源（Single Source of Truth），修改无需重新编译代码。
+3. **独立镜像打包**：每个子服务各自拥有 Shade 插件，编译输出干净可执行 FatJar 并构建容器。
+4. **统一 GitOps 维护**：单仓库单流水线，与主人的 ArgoCD 架构完美吻合。
+
+---
+
+## 3. 采集服务内部核心架构
+
+`cctv-collector-service` 内部划分为四大核心管理器：
 
 ```text
 ┌──────────────────────────────────────────────────────────────┐
@@ -56,7 +112,7 @@ graph TD
 └──────────────────────────────┴───────────────────────────────┘
 ```
 
-### 2.1 组件交互时序 (Sequence Diagram)
+### 3.1 组件交互时序 (Sequence Diagram)
 
 ```mermaid
 sequenceDiagram
@@ -101,9 +157,9 @@ sequenceDiagram
 
 ---
 
-## 3. 核心设计细节
+## 4. 核心设计细节
 
-### 3.1 零损耗流拷贝 (Stream Copy) 参数矩阵
+### 4.1 零损耗流拷贝 (Stream Copy) 参数矩阵
 底层 FFmpeg 命令行构造遵循：
 ```bash
 ffmpeg -hide_banner -loglevel info \
@@ -123,32 +179,179 @@ ffmpeg -hide_banner -loglevel info \
 - `-reset_timestamps 1`：确保每个 15 分钟的切片都从 PTS=0 开始，避免播放器拖动时间轴错位。
 - `-strftime 1`：按切片生成的具体系统时间自动命名。
 
-### 3.2 文件并发访问保护（避免下游 Batch 读半成品）
+### 4.2 文件并发访问保护（避免下游 Batch 读半成品）
 由于下阶段的 `Batch Uploader` 会异步扫描该目录，必须防止批处理读取到“正在写入中”的文件：
 1. **方案 A（大小检测）**：Batch 脚本仅拾取最后修改时间早于 60 秒前、且文件大小已稳定的切片；
 2. **方案 B（临时后缀）**：配合 segment 命名模式与移动重命名。
 
 ---
 
-## 4. 目录结构规范
+## 5. 部署与运维架构 (K3s 集群化与容器编排)
+
+### 5.1 Radxa K3s 节点部署拓扑
+
+采集服务与上传服务均打包为轻量容器镜像，统一部署在 **Radxa K3s 节点**（`radxa-cubie-a7a` · `10.0.1.105`）。二者通过共享的本地持久化卷（HostPath / Local PV）或者内网 StarFive NFS/SMB 共享目录进行无缝解耦衔接：
+
+```mermaid
+graph TD
+    subgraph LAN_HOME["家庭千兆内网 (10.0.1.0/24)"]
+        IPC["TP-LINK TL-IPC44AW<br/>(10.0.1.20:554)"]
+
+        subgraph RADXA_K3S["Radxa K3s 宿主节点 (10.0.1.105)"]
+            subgraph K3S_POD_COLLECTOR["Pod: cctv-collector"]
+                COLLECTOR_CONTAINER["cctv-collector-service<br/>(Java 21 + FFmpeg)"]
+            end
+
+            subgraph K3S_POD_UPLOADER["Pod: cctv-uploader (CronJob/Deployment)"]
+                UPLOADER_CONTAINER["cctv-uploader-service<br/>(Java 21 WebDAV Client)"]
+            end
+
+            SHARED_VOL[("缓冲数据卷 Buffer Volume<br/>HostPath / NFS 挂载")]
+        end
+
+        subgraph STARFIVE_NODE["存储/网关节点: StarFive (10.0.1.227)"]
+            ALIST["Alist 服务<br/>(:5244/dav)"]
+        end
+    end
+
+    subgraph CLOUD["云端网盘"]
+        NETDISK["阿里云盘 / 百度网盘 / 夸克"]
+    end
+
+    IPC -->|"RTSP TCP (1.5 Mbps)"| COLLECTOR_CONTAINER
+    COLLECTOR_CONTAINER -->|"写入切片"| SHARED_VOL
+    SHARED_VOL -.->|"扫描闭合切片"| UPLOADER_CONTAINER
+    UPLOADER_CONTAINER -->|"HTTP/WebDAV"| ALIST
+    ALIST -->|"API 推送"| NETDISK
+    UPLOADER_CONTAINER -.->|"上传完成清理"| SHARED_VOL
+```
+
+### 5.2 K3s 工作负载与资源调度规范
+
+两个服务均采用 Kubernetes 原生资源模型管理，兼顾低开销与高弹性：
+
+| 服务/工作负载 | K3s 资源类型 | 基础镜像环境 | 资源配额限制 (Limits/Requests) | 存储卷挂载 |
+| :--- | :--- | :--- | :--- | :--- |
+| **`cctv-collector`** | `Deployment` (Replicas: 1) | `eclipse-temurin:21-jre` + `ffmpeg` | CPU: 0.1~0.5 Core / Mem: 128MB~256MB | 挂载 Buffer 卷至 `/mnt/buffer/cctv` |
+| **`cctv-uploader`** | `Deployment` (常驻监听/定时扫描) | `eclipse-temurin:21-jre-alpine` | CPU: 0.1~0.3 Core / Mem: 128MB~256MB | 挂载相同 Buffer 卷至 `/mnt/buffer/cctv` |
+
+- **就绪与存活探针 (Liveness/Readiness Probes)**：利用采集端的切片心跳文件检测视频流是否卡死，若 60s 无切片更新则触发 Pod 自动重启。
+- **优雅停机 (PreStop Hook)**：利用容器停止时的 `preStop` 或向主进程分发 `SIGTERM`，确保 FFmpeg 封装写完最后一个 MP4 moov atom 头，避免损坏最后一个分段。
+
+### 5.3 备选 Systemd 传统部署托管 (非容器场景)
+
+若需要在 Radxa 上脱离 K3s 直接裸跑守护进程，依然完整保留 Systemd unit 支持：
+
+| 服务 | Systemd Unit | 运行用户 | 内存限制 | 重启策略 |
+| :--- | :--- | :--- | :--- | :--- |
+| 采集服务 | `cctv-collector.service` | `gateman` | `128M` | `always` (看门狗兜底) |
+| 上传服务 | `cctv-uploader.service` | `gateman` | `256M` | `on-failure` |
+
+### 5.4 GitOps 持续集成与发布流 (GitHub Actions + ArgoCD)
+
+本项目与主人的既有 GitOps 体系（`aliyun-k3s` ArgoCD 控制面 + `my-argocd-manifests` 根配置库）完全整合，实现全自动化交付流水线：
+
+```mermaid
+graph LR
+    subgraph DEV["开发与源码"]
+        CODE["Git Push<br/>(cctv-collector)"]
+    end
+
+    subgraph CI["GitHub Actions CI"]
+        BUILD["Maven Compile & Test<br/>(Java 21)"]
+        DOCKER["Docker Buildx (ARM64)<br/>collector & uploader"]
+        GHCR["Push to GHCR / Docker Registry<br/>(ghcr.io/nvd11/cctv-*:tag)"]
+        UPDATE_GIT["自动更新 Manifest 镜像版本"]
+    end
+
+    subgraph GITOPS["GitOps 仓库体系"]
+        ARGOCD_REPO["Git: nvd11/my-argocd-manifests<br/>(或本仓库 k8s/ 目录)"]
+    end
+
+    subgraph CD["ArgoCD (aliyun-k3s: 8.148.149.80)"]
+        ARGO_APP["ArgoCD Application<br/>cctv-system"]
+    end
+
+    subgraph CLUSTER["目标 K3s 集群"]
+        RADXA_PODS["Radxa K3s 节点<br/>cctv-collector & cctv-uploader Pods"]
+    end
+
+    CODE --> BUILD
+    BUILD --> DOCKER
+    DOCKER --> GHCR
+    GHCR --> UPDATE_GIT
+    UPDATE_GIT --> ARGOCD_REPO
+    ARGOCD_REPO -.->|"ArgoCD 轮询 / Webhook 触发"| ARGO_APP
+    ARGO_APP -->|"GitOps 自动同步/滚动升级"| RADXA_PODS
+```
+
+#### 流水线闭环细节：
+1. **CI 阶段（GitHub Actions）**：
+   - 监听 `main` 分支代码提交或 Release Tag。
+   - 执行 `mvn clean package` 多模块并行打包。
+   - 使用 Docker Buildx 构建兼容 Radxa 宿主机的容器镜像（ARM64 架构），推送至 GHCR（GitHub Container Registry）或阿里云/DockerHub。
+   - 自动提交更新 K8s 部署清单中的 `image.tag`。
+2. **CD 阶段（ArgoCD 控制面）**：
+   - 在主人的阿里云 ArgoCD 控制面注册 `cctv-collector` 与 `cctv-uploader` 的 Application（或统一 ApplicationSet）。
+   - ArgoCD 自动检测 Git 仓库中清单版本变更，向目标集群下发声明式更新。
+   - 采用 RollingUpdate 策略完成平滑重启，并在出现拉流或初始化异常时自动告警与回滚。
+
+---
+
+## 6. 目录结构规范（最终落地版）
 
 ```text
-cctv-collector/
-├── README.md                 # 项目介绍与一键启动指南
+cctv-collector/                          # 根项目（Parent POM）
+├── pom.xml                              # 父 POM：聚合两个微服务子模块、统一依赖版本
+├── README.md
 ├── docs/
-│   ├── REQUIREMENTS.md       # 需求规格说明书
-│   └── ARCHITECTURE.md       # 架构设计文档
-├── src/
-│   └── main/
-│       └── java/
-│           └── com/
-│               └── gateman/
-│                   └── cctv/
-│                       ├── CctvCollectorApp.java   # 主服务入口
-│                       ├── config/                 # 配置定义
-│                       └── supervisor/             # 进程看门狗与监控
-├── pom.xml                   # Maven 构建定义 (支持打包 Jar)
-└── scripts/
-    ├── start.sh              # 快速运行脚本
-    └── cctv-collector.service# Systemd 托管服务定义
+│   ├── REQUIREMENTS.md
+│   └── ARCHITECTURE.md
+│
+├── .github/
+│   └── workflows/                       # CI/CD 自动化流水线
+│       └── ci-cd.yaml                   # Maven 打包 + Docker Buildx (ARM64) + 镜像推送
+│
+├── k8s/                                 # ArgoCD 纳管的 GitOps 清单目录
+│   ├── configmap.yaml                   # 业务配置（RTSP/缓冲路径/切片秒数）
+│   ├── secret.yaml                      # 敏感信息（Alist Token/网盘凭据）
+│   ├── namespace.yaml
+│   ├── pv-buffer.yaml                   # 共享缓冲持久化卷
+│   ├── cctv-collector-deployment.yaml   # 采集端 Deployment
+│   └── cctv-uploader-deployment.yaml    # 上传端 Deployment
+│
+├── cctv-collector-service/              # 【Svc1】采集服务模块
+│   ├── pom.xml
+│   └── src/main/java/com/gateman/cctv/collector/
+│       ├── CctvCollectorApp.java
+│       ├── config/
+│       │   └── CollectorConfig.java     # 直接读取 ConfigMap 环境变量
+│       ├── supervisor/
+│       │   ├── FFmpegProcessSupervisor.java
+│       │   ├── FFmpegCommandBuilder.java
+│       │   ├── FFmpegLogPump.java
+│       │   └── DiskHealthChecker.java
+│       └── hook/
+│           └── GracefulShutdownHook.java
+│
+├── cctv-uploader-service/               # 【Svc2】上传服务模块
+│   ├── pom.xml
+│   └── src/main/java/com/gateman/cctv/uploader/
+│       ├── CctvUploaderApp.java
+│       ├── config/
+│       │   └── UploaderConfig.java      # 直接读取 ConfigMap/Secret 环境变量
+│       ├── scanner/
+│       │   └── BufferFileScanner.java
+│       ├── client/
+│       │   └── AlistWebDavClient.java
+│       └── cleaner/
+│           └── ExpiredFileCleaner.java
+│
+└── scripts/                             # 运维脚本（本地调试与兼容裸机启动）
+    ├── start-collector.sh
+    ├── start-uploader.sh
+    ├── cctv-collector.service
+    └── cctv-uploader.service
 ```
+
+---
