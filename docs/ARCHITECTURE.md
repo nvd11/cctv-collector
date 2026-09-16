@@ -164,7 +164,7 @@ sequenceDiagram
 ```bash
 ffmpeg -hide_banner -loglevel info \
   -rtsp_transport tcp \
-  -i "rtsp://admin:ga32565624@10.0.1.20:554/stream1" \
+  -i "rtsp://admin:your_password@10.0.1.20:554/stream1" \
   -c copy \
   -f segment \
   -segment_time 900 \

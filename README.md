@@ -38,7 +38,7 @@
 
 ### 配置说明
 支持通过系统环境变量或 `.env` 覆盖配置参数：
-- `CCTV_RTSP_URL`: 摄像机 RTSP 地址（默认 `rtsp://admin:ga32565624@10.0.1.20:554/stream1`）
+- `CCTV_RTSP_URL`: 摄像机 RTSP 地址（默认 `rtsp://admin:your_password@10.0.1.20:554/stream1`）
 - `CCTV_BUFFER_DIR`: 视频切片暂存目录（默认 `/tmp/cctv_buffer` 或指定 StarFive 挂载点）
 - `CCTV_SEGMENT_SECONDS`: 切片分段时长（默认 `900` 秒 / 15 分钟）
 - `CCTV_MIN_FREE_DISK_GB`: 磁盘安全熔断阈值（默认 `5` GB）
