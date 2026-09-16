@@ -1,9 +1,10 @@
 # CCTV Collector (视频流采集守护服务)
 
 [![Java](https://img.shields.io/badge/Java-21-orange.svg)](https://openjdk.org/)
+[![Quarkus](https://img.shields.io/badge/Quarkus-3.8-red.svg)](https://quarkus.io/)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-针对家庭局域网智能监控摄像机（TP-LINK TL-IPC44AW 2.5K 全彩云台机型）的 7×24 小时高可靠视频流采集守护服务。
+针对家庭局域网智能监控摄像机（TP-LINK TL-IPC44AW 2.5K 全彩云台机型）的 7×24 小时高可靠视频流采集守护服务，基于 **Quarkus 3.8 + Java 21** 亚原子轻量级架构构建。
 
 ---
 

@@ -1,0 +1,46 @@
+name: CCTV Collector CI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "cctv-collector-service/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - "mvnw"
+      - ".github/workflows/ci.yaml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "cctv-collector-service/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - "mvnw"
+      - ".github/workflows/ci.yaml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Compile, Test & Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Temurin JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "21"
+          cache: "maven"
+
+      - name: Run Unit & Integration Tests
+        run: |
+          ./mvnw clean test -pl cctv-collector-service
+
+      - name: Package Service Artifacts
+        run: |
+          ./mvnw package -DskipTests -pl cctv-collector-service

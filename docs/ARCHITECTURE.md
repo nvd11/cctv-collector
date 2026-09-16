@@ -199,11 +199,11 @@ graph TD
 
         subgraph RADXA_K3S["Radxa K3s 宿主节点 (10.0.1.105)"]
             subgraph K3S_POD_COLLECTOR["Pod: cctv-collector"]
-                COLLECTOR_CONTAINER["cctv-collector-service<br/>(Java 21 + FFmpeg)"]
+                COLLECTOR_CONTAINER["cctv-collector-service<br/>(Quarkus 3.8 + Java 21 + FFmpeg)"]
             end
 
             subgraph K3S_POD_UPLOADER["Pod: cctv-uploader (CronJob/Deployment)"]
-                UPLOADER_CONTAINER["cctv-uploader-service<br/>(Java 21 WebDAV Client)"]
+                UPLOADER_CONTAINER["cctv-uploader-service<br/>(Quarkus 3.8 + Java 21 WebDAV Client)"]
             end
 
             SHARED_VOL[("缓冲数据卷 Buffer Volume<br/>HostPath / NFS 挂载")]
@@ -228,15 +228,17 @@ graph TD
 
 ### 5.2 K3s 工作负载与资源调度规范
 
-两个服务均采用 Kubernetes 原生资源模型管理，兼顾低开销与高弹性：
+两个微服务均采用 **Quarkus 3.8 (Java 21)** 云原生架构，内存与启动损耗仅为传统 Spring Boot 的 1/5：
 
 | 服务/工作负载 | K3s 资源类型 | 基础镜像环境 | 资源配额限制 (Limits/Requests) | 存储卷挂载 |
 | :--- | :--- | :--- | :--- | :--- |
-| **`cctv-collector`** | `Deployment` (Replicas: 1) | `eclipse-temurin:21-jre` + `ffmpeg` | CPU: 0.1~0.5 Core / Mem: 128MB~256MB | 挂载 Buffer 卷至 `/mnt/buffer/cctv` |
-| **`cctv-uploader`** | `Deployment` (常驻监听/定时扫描) | `eclipse-temurin:21-jre-alpine` | CPU: 0.1~0.3 Core / Mem: 128MB~256MB | 挂载相同 Buffer 卷至 `/mnt/buffer/cctv` |
+| **`cctv-collector`** | `Deployment` (Replicas: 1) | `eclipse-temurin:21-jre` + `ffmpeg` | CPU: 0.1~0.5 Core / Mem: 64MB~128MB | 挂载 Buffer 卷至 `/mnt/buffer/cctv` |
+| **`cctv-uploader`** | `Deployment` (常驻监听/定时扫描) | `eclipse-temurin:21-jre-alpine` | CPU: 0.1~0.2 Core / Mem: 64MB~128MB | 挂载相同 Buffer 卷至 `/mnt/buffer/cctv` |
 
-- **就绪与存活探针 (Liveness/Readiness Probes)**：利用采集端的切片心跳文件检测视频流是否卡死，若 60s 无切片更新则触发 Pod 自动重启。
-- **优雅停机 (PreStop Hook)**：利用容器停止时的 `preStop` 或向主进程分发 `SIGTERM`，确保 FFmpeg 封装写完最后一个 MP4 moov atom 头，避免损坏最后一个分段。
+- **原生云原生探针 (Quarkus SmallRye Health)**：
+  - 存活探针 (Liveness)：`GET http://localhost:8080/q/health/live`（探测 FFmpeg 守护线程是否僵死）
+  - 就绪探针 (Readiness)：`GET http://localhost:8080/q/health/ready`（探测 RTSP 连接与缓冲挂载点是否就绪）
+- **优雅停机 (Graceful Shutdown)**：利用 Quarkus `@PreDestroy` CDI 生命周期拦截器或容器 `SIGTERM`，确保 FFmpeg 封装写完最后一个 MP4 moov atom 头，避免损坏最后一个分段。
 
 ### 5.3 备选 Systemd 传统部署托管 (非容器场景)
 
