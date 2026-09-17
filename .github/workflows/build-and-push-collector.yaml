@@ -20,7 +20,10 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    name: Native Build & Push (ARM64)
+    # 🎯 采用 GitHub 官方原生 ARM64 Runner (4 vCPU, 16GB RAM)
+    # 彻底告别慢如蜗牛的 QEMU 模拟，实现 GraalVM/Mandrel Native 极速编译！
+    runs-on: ubuntu-24.04-arm
     permissions:
       contents: read
       packages: write
@@ -28,9 +31,6 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -52,13 +52,13 @@ jobs:
             type=ref,event=tag
             type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
 
-      - name: Build and push image
+      - name: Build and push native image
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: cctv-collector-service/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
@@ -75,6 +75,7 @@ jobs:
             echo "### Published Image"
             echo
             echo '- Repository: `${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}`'
+            echo '- Platform: `linux/arm64 (Native binary)`'
             echo '- Manifest digest: `${{ steps.build.outputs.digest }}`'
             echo '- Commit: `${{ github.sha }}`'
           } >> "$GITHUB_STEP_SUMMARY"
