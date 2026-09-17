@@ -1,15 +1,6 @@
 name: CCTV Collector CI
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "cctv-collector-service/**"
-      - "pom.xml"
-      - ".mvn/**"
-      - "mvnw"
-      - ".github/workflows/ci.yaml"
   pull_request:
     branches:
       - main
