@@ -15,21 +15,19 @@ COPY cctv-collector-service/src cctv-collector-service/src
 # Compile to native binary executable
 RUN ./mvnw -B package -Dnative -DskipTests -pl cctv-collector-service -am
 
-# Stage 2: Ultra-lightweight minimal runtime image with FFmpeg
-FROM registry.access.redhat.com/ubi9/ubi-minimal:9.3
+# Stage 2: Minimal runtime image based on Debian slim with official FFmpeg
+FROM debian:12-slim
 WORKDIR /app
 
-# Install FFmpeg and required runtime dynamic libraries
-RUN microdnf update -y \
-    && microdnf install -y --nodocs epel-release || true \
-    && microdnf install -y --nodocs ffmpeg tzdata ca-certificates \
-    && microdnf clean all \
-    && rm -rf /var/cache/yum
+# Install FFmpeg, ca-certificates, tzdata and cleanup apt caches
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
 # Non-root user setup
-RUN useradd -u 1000 -d /app cctv && chown -R 1000:1000 /app
+RUN groupadd -r cctv --gid 1000 && useradd -r -g cctv --uid 1000 -d /app cctv
 
-COPY --from=build --chown=1000:1000 /work/cctv-collector-service/target/*-runner /app/application
+COPY --from=build --chown=cctv:cctv /work/cctv-collector-service/target/*-runner /app/application
 
 USER 1000
 EXPOSE 8081
