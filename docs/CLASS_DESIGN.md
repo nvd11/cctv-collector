@@ -8,8 +8,10 @@
    - 杜绝动态类加载、复杂运行时反射和动态代理。
    - 配置体系采用 Quarkus 官方编译期代码生成的 `@ConfigMapping` 接口模型，规避传统 Spring 风格的动态属性注入。
    - 依赖注入全面基于 Quarkus Arc（编译期静态 CDI 容器），实现极速冷启动与微秒级 Bean 依赖绑定。
-2. **外部长进程高可用托管与管道安全 (Process Reliability)**：
-   - FFmpeg 子进程属于不受 JVM 直接垃圾回收管辖的外部操作系统进程。类设计必须规避 Linux Pipe 缓冲区（通常为 64KB）因日志堆积引发的进程假死死锁。
+2. **外部进程独立托管与容器预装体系 (Out-of-Process Supervision)**：
+   - **不采用 JNI 绑定（如 JavaCV）**：避免 RTSP 坏流导致底层的 C 语言段错误（Segmentation Fault）连带让整个 Java 虚拟机直接崩溃。
+   - **操作系统级解耦**：容器基础镜像（`debian:12-slim`）预装官方编译的 `/usr/bin/ffmpeg`（实测版本 5.1.9）；Java 服务作为**主控大脑与看门狗**，通过标准 `ProcessBuilder` 调起和托管独立的 `ffmpeg` 进程。
+   - **管道缓冲区防死锁**：必须规避 Linux Pipe 缓冲区（通常为 64KB）因日志堆积引发的进程假死死锁。
    - 针对家庭 Wi-Fi 抖动、摄像机定时重启或微弱丢包，看门狗采用有限状态机与指数退避（Exponential Backoff）自愈循环。
 3. **云原生健康契约闭环 (MicroProfile Health Contract)**：
    - 将内部看门狗的心跳感知（流存活）与磁盘熔断状态，分别桥接至 MicroProfile `@Liveness` 与 `@Readiness` 标准探针，实现与 K3s 控制面的故障自愈闭环。
