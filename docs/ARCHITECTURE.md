@@ -157,9 +157,56 @@ sequenceDiagram
 
 ---
 
-## 4. 核心设计细节
+---
 
-### 4.1 零损耗流拷贝 (Stream Copy) 参数矩阵
+## 4. 核心设计细节与执行机理
+
+### 4.1 进程编排架构：外部进程独立托管 (Out-of-Process Supervision)
+
+在音视频流媒体工程中，Java 应用程序通常面临两种与底层多媒体引擎交互的架构路线选择：
+
+1. **进程内 JNI 绑定模式 (In-Process via JNI / JavaCV)**：
+   - 依赖 JavaCV / JNI 将 FFmpeg 的 C 动态库（`libavcodec`, `libavformat` 等）绑定至 JVM 堆内运行。
+   - **致命缺陷**：家庭无线监控摄像头的 RTSP 视频流极易因 Wi-Fi 抖动、微波干扰产生畸变坏帧。一旦底层的 C 代码解析损坏的数据包发生内存访问越界或段错误（Segmentation Fault），**将直接引发整个 Java 虚拟机崩溃宕机**，且任何 Java 层的 `try-catch` 均无法拦截。此外，JNI 复杂的 C 指针绑定与 Quarkus Native (GraalVM SubstrateVM) 编译体系存在严重兼容性壁垒。
+2. **外部独立子进程托管模式 (Out-of-Process Supervision - 本项目采用)**：
+   - **清晰解耦**：容器基础镜像预装官方原生编译的 `ffmpeg` 二进制程序（`debian:12-slim` + `apt-get install ffmpeg`，实测版本为 FFmpeg 5.1.9）；
+   - **职责分离**：Java 服务作为**控制大脑与工业级看门狗（Master Watchdog）**，通过 `java.lang.ProcessBuilder` 调起并托管底层的 `ffmpeg` 命令；
+   - **容错隔离与自愈**：底层 FFmpeg 即使遭遇不可恢复的异常坏流崩溃退出（ExitCode != 0），受影响的仅是操作系统子进程，Java 守护主服务依然安然无恙，能在 0.1 秒内感知退出事件并触发指数退避机制重新拉起拉流会话。
+
+```mermaid
+flowchart TD
+    subgraph Container ["K3s Pod 容器内部 (cctv-collector 镜像)"]
+        subgraph JavaSide ["Java 控制面 (Quarkus 3.8 Native / 12MB RAM)"]
+            Service["CollectorService (业务门面)"]
+            Supervisor["FFmpegProcessSupervisor (看门狗事件循环)"]
+            Checker["DiskHealthChecker (磁盘熔断)"]
+            LogPump["FFmpegLogPump (管道日志抽取 & 心跳检测)"]
+            Service --> Supervisor
+            Supervisor --> Checker
+            Supervisor --> LogPump
+        end
+
+        subgraph OSSide ["Linux 操作系统层 (Debian 12 Slim 内核)"]
+            FFMPEG_CMD["/usr/bin/ffmpeg 5.1.9 原生二进制"]
+            PIPE_ERR["stderr / stdout 管道缓冲区 (64KB)"]
+        end
+
+        Supervisor -->|"1. ProcessBuilder 调度执行"| FFMPEG_CMD
+        Supervisor -->|"2. stdin 注入 'q' 触发优雅收尾"| FFMPEG_CMD
+        FFMPEG_CMD -->|"输出帧进度流"| PIPE_ERR
+        PIPE_ERR -->|"循环非阻塞抽取"| LogPump
+    end
+
+    subgraph External ["内网硬件与存储卷"]
+        IPC["TP-LINK 摄像机 (10.0.1.20:554)"]
+        DISK["/mnt/buffer/cctv (MP4 物理切片文件)"]
+    end
+
+    IPC -->|"RTSP TCP (H.265+AAC)"| FFMPEG_CMD
+    FFMPEG_CMD -->|"无损 Stream Copy 写入"| DISK
+```
+
+### 4.2 零损耗流拷贝 (Stream Copy) 参数矩阵
 底层 FFmpeg 命令行构造遵循：
 ```bash
 ffmpeg -hide_banner -loglevel info \
@@ -175,11 +222,11 @@ ffmpeg -hide_banner -loglevel info \
 ```
 
 - `-rtsp_transport tcp`：强制走 TCP，解决无线监控摄像头丢包造成的绿屏和花屏。
-- `-c copy`：音视频均不进行任何解码与重编码，只做 MP4 容器封装，极度节约 CPU。
+- `-c copy`：音视频均不进行任何解码与重编码，只做 MP4 容器封装，极度节约 CPU（单板占用 < 0.01 核）。
 - `-reset_timestamps 1`：确保每个 15 分钟的切片都从 PTS=0 开始，避免播放器拖动时间轴错位。
 - `-strftime 1`：按切片生成的具体系统时间自动命名。
 
-### 4.2 文件并发访问保护（避免下游 Batch 读半成品）
+### 4.3 文件并发访问保护（避免下游 Batch 读半成品）
 由于下阶段的 `Batch Uploader` 会异步扫描该目录，必须防止批处理读取到“正在写入中”的文件：
 1. **方案 A（大小检测）**：Batch 脚本仅拾取最后修改时间早于 60 秒前、且文件大小已稳定的切片；
 2. **方案 B（临时后缀）**：配合 segment 命名模式与移动重命名。
