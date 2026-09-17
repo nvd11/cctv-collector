@@ -89,27 +89,35 @@ classDiagram
         -calculateBackoff(int attempt) int
     }
 
-    class CollectorLivenessCheck {
-        <<ApplicationScoped / Liveness>>
-        -StreamHealthTracker healthTracker
-        -FFmpegProcessSupervisor supervisor
-        +call() HealthCheckResponse
-    }
-
-    class CollectorReadinessCheck {
-        <<ApplicationScoped / Readiness>>
-        -DiskHealthChecker diskChecker
-        -FFmpegProcessSupervisor supervisor
-        +call() HealthCheckResponse
-    }
-
-    class StreamStatusResource {
-        <<Path: /api/status>>
-        -StreamHealthTracker healthTracker
-        -DiskHealthChecker diskChecker
-        -CollectorConfig config
+    class CollectorService {
+        <<interface>>
+        +startCollection() void
+        +stopCollection() void
+        +restartCollection() void
         +getStatus() StreamStatusSnapshot
+        +isHealthy() boolean
     }
+
+    class CollectorServiceImpl {
+        <<ApplicationScoped>>
+        -CollectorConfig config
+        -DiskHealthChecker diskChecker
+        -FFmpegProcessSupervisor supervisor
+        -StreamHealthTracker healthTracker
+        +startCollection() void
+        +stopCollection() void
+        +restartCollection() void
+        +getStatus() StreamStatusSnapshot
+        +isHealthy() boolean
+    }
+
+    CollectorService <|.. CollectorServiceImpl : 实现契约
+    CollectorServiceImpl --> FFmpegProcessSupervisor : 调度核心进程
+    CollectorServiceImpl --> DiskHealthChecker : 空间审计
+    CollectorServiceImpl --> StreamHealthTracker : 查询与聚合状态
+    CollectorServiceImpl <-- StreamStatusResource : 门面调用
+    CollectorServiceImpl <-- CollectorLivenessCheck : 探针校验
+    CollectorServiceImpl <-- CollectorReadinessCheck : 探针校验
 
     %% 依赖与关联关系
     CollectorConfig <-- DiskHealthChecker : 注入配置
@@ -119,10 +127,10 @@ classDiagram
     FFmpegCommandBuilder <-- FFmpegProcessSupervisor : 组装命令
     FFmpegLogPump <-- FFmpegProcessSupervisor : 异步抽取日志
     StreamHealthTracker <-- FFmpegProcessSupervisor : 上报流指标
-    StreamHealthTracker <-- CollectorLivenessCheck : 读取存活指标
-    DiskHealthChecker <-- CollectorReadinessCheck : 读取挂载状态
-    StreamHealthTracker <-- StreamStatusResource : 暴露状态端点
-    DiskHealthChecker <-- StreamStatusResource : 暴露磁盘状态
+    CollectorConfig <-- CollectorServiceImpl : 注入参数
+    CollectorService <-- StreamStatusResource : 统一业务门面调用
+    CollectorService <-- CollectorLivenessCheck : 业务健康查询
+    CollectorService <-- CollectorReadinessCheck : 业务就绪查询
 ```
 
 ---
@@ -309,21 +317,35 @@ sequenceDiagram
 
 ---
 
-### 4.7 `CollectorLivenessCheck` & `CollectorReadinessCheck` (类)
+### 4.7 `CollectorService` (接口) 与 `CollectorServiceImpl` (实现类)
+- **包路径**：`com.gateman.cctv.collector.service`
+- **定位**：**业务领域门面服务 (Domain Service Facade)**
+- **设计要点**：
+  - 遵循清晰的“Controller/Resource -> Service -> Supervisor/Infrastructure”分层架构。
+  - 将底层进程管控、磁盘审计、指标汇总聚合为标准的业务方法，上层 Resource 和 HealthCheck 无须直接耦合底层的 Process 和 Supervisor 细节。
+- **方法签名**：
+  - `void startCollection()`: 启动采集业务。
+  - `void stopCollection()`: 停止采集业务。
+  - `void restartCollection()`: 人工/运维重启采集业务。
+  - `StreamStatusSnapshot getStatus()`: 组装返回包含流状态、已切片数、磁盘余量等全量业务快照。
+  - `boolean isHealthy()`: 综合业务健康度判定。
+
+---
+
+### 4.8 `CollectorLivenessCheck` & `CollectorReadinessCheck` (类)
 - **包路径**：`com.gateman.cctv.collector.health`
 - **注解**：分别标注 `@Liveness` 与 `@Readiness`
 - **设计要点**：
   - 接入 MicroProfile Health 规范，自动向 Quarkus 暴露 `/q/health/live` 与 `/q/health/ready`；
-  - 存活探针关注：推流进程是否存在且 60 秒内有帧数据推进；
-  - 就绪探针关注：缓冲目录可写且磁盘未熔断。
+  - 统一委托给 `CollectorService.isHealthy()` 与就绪校验，解耦底层细节。
 
 ---
 
-### 4.8 `StreamStatusResource` (类)
+### 4.9 `StreamStatusResource` (类)
 - **包路径**：`com.gateman.cctv.collector.resource`
 - **注解**：`@Path("/api/status")`
 - **设计要点**：
-  - 对外提供标准只读 JSON 监控数据，返回运行状态摘要（包含 Native 运行时环境、内存占用、实时流健康度、磁盘使用率等）。
+  - 门面 REST API，纯粹调用 `CollectorService.getStatus()`，对外返回标准 JSON 监控数据。
 
 ---
 
