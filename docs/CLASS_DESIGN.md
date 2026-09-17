@@ -47,6 +47,61 @@ classDiagram
         +ensureDirectoryExists(Path dir) void
     }
 
+    class VideoStreamProfile {
+        <<record>>
+        +String streamUrl
+        +String protocol
+        +String videoCodec
+        +String audioCodec
+        +int resolutionWidth
+        +int resolutionHeight
+        +int fps
+        +long bitRateBps
+        +boolean isAlive
+    }
+
+    class VideoSegment {
+        <<record / Domain Model>>
+        +String fileId
+        +Path filePath
+        +String fileName
+        +LocalDateTime startTime
+        +LocalDateTime endTime
+        +long durationSeconds
+        +long fileSizeBytes
+        +SegmentStatus status
+        +boolean isReadyForUpload()
+    }
+
+    class SegmentStatus {
+        <<enumeration>>
+        WRITING
+        CLOSED
+        COMMITTED
+        CORRUPTED
+    }
+
+    class SegmentLifecycleWatcher {
+        <<ApplicationScoped>>
+        -CollectorConfig config
+        -SegmentRegistry segmentRegistry
+        -Logger log
+        +onSegmentOpened(Path tmpFile) VideoSegment
+        +onSegmentCompleted(Path closedFile) VideoSegment
+        +listReadySegments() List~VideoSegment~
+        +scanBufferDirectory() List~VideoSegment~
+    }
+
+    class SegmentRegistry {
+        <<ApplicationScoped>>
+        -ConcurrentMap~String, VideoSegment~ activeSegments
+        -ConcurrentLinkedDeque~VideoSegment~ recentSegments
+        +registerWriting(Path path) VideoSegment
+        +markClosed(Path path, long size) VideoSegment
+        +getRecentSegments(int limit) List~VideoSegment~
+        +getLatestSegment() Optional~VideoSegment~
+    }
+
     class FFmpegLogPump {
         <<Runnable>>
         -InputStream inputStream
@@ -115,14 +170,22 @@ classDiagram
     CollectorServiceImpl --> FFmpegProcessSupervisor : 调度核心进程
     CollectorServiceImpl --> DiskHealthChecker : 空间审计
     CollectorServiceImpl --> StreamHealthTracker : 查询与聚合状态
+    CollectorServiceImpl --> SegmentRegistry : 获取切片领域实体
     CollectorServiceImpl <-- StreamStatusResource : 门面调用
     CollectorServiceImpl <-- CollectorLivenessCheck : 探针校验
     CollectorServiceImpl <-- CollectorReadinessCheck : 探针校验
+
+    FFmpegProcessSupervisor --> VideoStreamProfile : 维护视频流画像
+    FFmpegProcessSupervisor --> SegmentLifecycleWatcher : 派发切片生命周期事件
+    SegmentLifecycleWatcher --> SegmentRegistry : 注册/维护切片状态
+    SegmentRegistry *-- VideoSegment : 管理切片集合
+    VideoSegment *-- SegmentStatus : 状态枚举
 
     %% 依赖与关联关系
     CollectorConfig <-- DiskHealthChecker : 注入配置
     CollectorConfig <-- FFmpegCommandBuilder : 读取参数
     CollectorConfig <-- FFmpegProcessSupervisor : 注入配置
+    CollectorConfig <-- SegmentLifecycleWatcher : 读取分段秒数与目录
     DiskHealthChecker <-- FFmpegProcessSupervisor : 依赖空间校验
     FFmpegCommandBuilder <-- FFmpegProcessSupervisor : 组装命令
     FFmpegLogPump <-- FFmpegProcessSupervisor : 异步抽取日志
@@ -240,7 +303,66 @@ sequenceDiagram
 
 ---
 
-## 4. 各核心类详细技术规格定义
+---
+
+## 4. 视频流与切片领域模型 (Domain Model Specifications)
+
+针对主人关注的核心：**“如何精确描述实时视频流属性？”** 与 **“如何建模与追踪每一个落盘的切片文件（如 1 分钟 / 15 分钟切片）？”**，系统抽象了专门的强类型领域模型与状态机：
+
+### 4.1 `VideoStreamProfile` (视频流核心画像)
+- **包路径**：`com.gateman.cctv.collector.model`
+- **定位**：**不可变领域模型 (Java 21 Record)**
+- **职责**：高保真刻画正在接入的 RTSP 视频流的技术规格与链路健康度：
+  - `streamUrl`: RTSP 连接地址（已脱敏）；
+  - `protocol`: 传输层协议（固定为 `"RTSP/TCP"`）；
+  - `videoCodec`: 视频编码（如 `"H.265 (HEVC)"`）；
+  - `audioCodec`: 音频编码（如 `"AAC (16000Hz)"`）；
+  - `resolutionWidth` / `resolutionHeight`: 视频分辨率（如 `2560 x 1440 (2.5K)`）；
+  - `fps`: 帧率（如 `15` fps）；
+  - `bitRateBps`: 实时码率（约 `1.5 Mbps`）；
+  - `isAlive`: 当前推流物理状态是否活跃。
+
+---
+
+### 4.2 `VideoSegment` (分段切片领域实体)
+- **包路径**：`com.gateman.cctv.collector.model`
+- **定位**：**切片生命周期核心实体 (Java 21 Record)**
+- **职责**：完整描述磁盘上每一个正在生成、或者已经闭合的切片物理文件：
+  - `fileId`: 切片唯一标识（根据命名时间戳生成，如 `seg_20260917_150000`）；
+  - `filePath`: 磁盘绝对物理路径（如 `/mnt/buffer/cctv/cctv_20260917_150000.mp4`）；
+  - `fileName`: 文件全名；
+  - `startTime`: 切片起始时间点；
+  - `endTime`: 切片闭合时间点；
+  - `durationSeconds`: 实际分段时长（如配置为 `60` 秒即为 1 分钟每段，默认 900 秒）；
+  - `fileSizeBytes`: 文件物理大小（字节）；
+  - `status`: 当前生命周期状态（`SegmentStatus` 枚举）；
+  - `boolean isReadyForUpload()`: 便捷判定方法（当且仅当状态为 `CLOSED` 且文件大小 > 0 时返回 `true`，可安全交由下阶段 Uploader 上传）。
+
+---
+
+### 4.3 `SegmentStatus` (切片生命周期枚举)
+- **状态流转**：
+  ```text
+  [FFmpeg 正在写入] WRITING 
+          ↓ (达到 1min/15min 切片时间戳)
+  [FFmpeg 闭合文件头] CLOSED (此时可安全上传)
+          ↓ (被 Uploader 消费)
+  [上传完成并确认] COMMITTED ➔ 自动清理
+          ↓ (异常断电或不完整损坏)
+  [残缺文件] CORRUPTED
+  ```
+
+---
+
+### 4.4 `SegmentRegistry` & `SegmentLifecycleWatcher` (切片注册与监听仓储)
+- **定位**：内存中高并发线程安全的切片状态仓储
+- **职责**：
+  - `SegmentRegistry`：在内存维护最近已完成切片队列（`recentSegments`），上层 API 可以随时查看“刚刚 1 分钟前保存了哪个视频、文件多大、时长多少”；
+  - `SegmentLifecycleWatcher`：监听磁盘文件生成与关闭事件，完成切片实体的瞬时封装与流转。
+
+---
+
+## 5. 各核心控制器与服务技术规格定义
 
 ### 4.1 `CollectorConfig` (接口)
 - **包路径**：`com.gateman.cctv.collector.config`
