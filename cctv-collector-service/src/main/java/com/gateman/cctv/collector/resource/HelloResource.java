@@ -17,7 +17,7 @@ public class HelloResource {
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public Map<String, Object> hello() {
-        LOG.info("Hello API invoked by Master Jason at {}", Instant.now());
+        LOG.info("Hello API invoked at {}", Instant.now());
         return Map.of(
             "service", "cctv-collector-service",
             "framework", "Quarkus 3.8",
