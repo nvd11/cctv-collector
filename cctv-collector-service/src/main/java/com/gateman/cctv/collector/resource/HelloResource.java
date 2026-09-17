@@ -24,7 +24,7 @@ public class HelloResource {
             "javaVersion", System.getProperty("java.version"),
             "status", "UP",
             "timestamp", Instant.now().toString(),
-            "message", "Hello Master Jason! Cindy is ready to serve you~"
+            "message", "Hello Master Jason! Cindy v2.0 is ready to serve you~"
         );
     }
 }
