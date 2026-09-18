@@ -152,6 +152,8 @@ classDiagram
         +stopCollection() void
         +restartCollection() void
         +getStatus() StreamStatusSnapshot
+        +getRecentSegments(int limit) List~VideoSegment~
+        +getLatestSegment() Optional~VideoSegment~
         +isHealthy() boolean
     }
 
@@ -161,11 +163,22 @@ classDiagram
         -DiskHealthChecker diskChecker
         -FFmpegProcessSupervisor supervisor
         -StreamHealthTracker healthTracker
+        -SegmentRegistry segmentRegistry
         +startCollection() void
         +stopCollection() void
         +restartCollection() void
         +getStatus() StreamStatusSnapshot
+        +getRecentSegments(int limit) List~VideoSegment~
+        +getLatestSegment() Optional~VideoSegment~
         +isHealthy() boolean
+    }
+
+    class StreamStatusResource {
+        <<Path("/api")>>
+        -CollectorService collectorService
+        +getStatus() RestResponse~StreamStatusSnapshot~
+        +restart() RestResponse~Map~String,String~~
+        +getSegments(int limit) RestResponse~List~VideoSegment~~
     }
 
     CollectorService <|.. CollectorServiceImpl : 实现契约
@@ -293,6 +306,52 @@ sequenceDiagram
         Super->>Process: process.destroyForcibly() (SIGKILL)
     end
     Super-->>K3s: Java 进程退出，Pod 终结
+```
+
+### 3.4 外部 REST API 交互与控制时序 (REST API Interaction & Control Flow)
+
+采集服务不仅通过后台守护线程自主循环，还通过标准 REST API 为上层网关（Kong Gateway `gw.jppwl.asia/cctv`）、前端监控面板或运维自动化脚本提供全景状态查询、切片元数据检索与人工重启干预能力：
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Client as Client / Kong Gateway
+    participant Resource as StreamStatusResource (/api)
+    participant Service as CollectorServiceImpl
+    participant Tracker as StreamHealthTracker
+    participant Checker as DiskHealthChecker
+    participant Registry as SegmentRegistry
+    participant Super as FFmpegProcessSupervisor
+
+    Note over Client,Super: 场景 1：获取全景状态快照 (GET /api/status)
+    Client->>Resource: GET /api/status
+    Resource->>Service: getStatus()
+    Service->>Tracker: getStatusSnapshot()
+    Tracker-->>Service: 帧率、运行时间、断流重启次数、推流健康度
+    Service->>Checker: getFreeDiskSpaceGb()
+    Checker-->>Service: 磁盘剩余容量 (GB)
+    Service->>Registry: getLatestSegment()
+    Registry-->>Service: 最新活跃切片实体 (VideoSegment)
+    Service-->>Resource: StreamStatusSnapshot (聚合快照)
+    Resource-->>Client: 200 OK (JSON 响应快照)
+
+    Note over Client,Super: 场景 2：运维人工触发重启推流 (POST /api/restart)
+    Client->>Resource: POST /api/restart
+    Resource->>Service: restartCollection()
+    Service->>Super: restart()
+    Super->>Super: 优雅终止旧 FFmpeg 进程并闭合切片
+    Super->>Super: 重置退避计数器并重新拉起 FFmpeg
+    Super-->>Service: 重启指令触发完成
+    Service-->>Resource: void
+    Resource-->>Client: 200 OK {"status":"restarted","timestamp":"..."}
+
+    Note over Client,Super: 场景 3：已闭合切片清单查询 (GET /api/segments?limit=10)
+    Client->>Resource: GET /api/segments?limit=10
+    Resource->>Service: getRecentSegments(10)
+    Service->>Registry: getRecentSegments(10)
+    Registry-->>Service: List~VideoSegment~ (已就绪切片清单)
+    Service-->>Resource: List~VideoSegment~
+    Resource-->>Client: 200 OK (切片实体 JSON 数组)
 ```
 
 ---
@@ -444,6 +503,8 @@ sequenceDiagram
   - `void stopCollection()`: 停止采集业务。
   - `void restartCollection()`: 人工/运维重启采集业务。
   - `StreamStatusSnapshot getStatus()`: 组装返回包含流状态、已切片数、磁盘余量等全量业务快照。
+  - `List<VideoSegment> getRecentSegments(int limit)`: 查询最近生成的切片清单。
+  - `Optional<VideoSegment> getLatestSegment()`: 获取当前活跃/最新切片实体。
   - `boolean isHealthy()`: 综合业务健康度判定。
 
 ---
@@ -459,9 +520,13 @@ sequenceDiagram
 
 ### 4.9 `StreamStatusResource` (类)
 - **包路径**：`com.gateman.cctv.collector.resource`
-- **注解**：`@Path("/api/status")`
+- **注解**：`@Path("/api")`
 - **设计要点**：
-  - 门面 REST API，纯粹调用 `CollectorService.getStatus()`，对外返回标准 JSON 监控数据。
+  - 统一的 RESTful 业务门面接口，将前端、网关与外部管理系统的 HTTP 请求直接委托给 `CollectorService` 处理。
+- **暴露的核心端点**：
+  1. `GET /api/status`: 查询服务全景健康度与推流监控快照（返回 `StreamStatusSnapshot` JSON）。
+  2. `POST /api/restart`: 运维手动触发采集进程优雅重启与退避重置。
+  3. `GET /api/segments`: 查询最近落盘闭合的切片历史清单（支持 `?limit=N` 参数）。
 
 ---
 
