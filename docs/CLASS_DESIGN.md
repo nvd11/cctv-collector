@@ -217,7 +217,6 @@ sequenceDiagram
     participant K3s as K3s Kubelet Probes
 
     Quarkus->>Super: onStartup(StartupEvent)
-    activate Super
     Super->>Super: 启动后台守护线程 supervisorLoop()
     
     loop 持续守护循环
@@ -230,9 +229,7 @@ sequenceDiagram
             Super->>Builder: buildArgs(config)
             Builder-->>Super: 完整的 argv 数组
             Super->>Process: ProcessBuilder.start()
-            activate Process
             Super->>Pump: 启动 stdout/stderr 抽取线程
-            activate Pump
 
             loop 帧数据实时切片
                 Process->>Pump: 输出进度流 (frame=... fps=... time=...)
@@ -260,7 +257,6 @@ sequenceDiagram
 
     Note over Process: 局域网摄像机断电 / Wi-Fi 闪断
     Process-->>Super: 进程退出 (exitCode != 0)
-    deactivate Process
     Super->>Tracker: recordRestart()
     
     Super->>Super: 计算指数退避等待时长 (5s -> 10s -> 20s... max 60s)
@@ -272,7 +268,6 @@ sequenceDiagram
     end
 
     Super->>Process: 重新拉起 ProcessBuilder.start()
-    activate Process
     Note over Super: 恢复推流，重置退避计数器
 ```
 
@@ -287,20 +282,17 @@ sequenceDiagram
     participant FS as Buffer Volume (/mnt/buffer/cctv)
 
     K3s->>Super: SIGTERM 信号 / onShutdown(ShutdownEvent)
-    activate Super
     Super->>Super: shouldRun.set(false)
     Super->>Process: 向 stdin 输入字符 'q'
     Note over Process: FFmpeg 接收到 'q'，开始封装当前正在写入的 MP4 尾部
     Process->>FS: 刷新并闭合 moov atom 索引头
     
     alt FFmpeg 5 秒内自愿安全退出
-        Process-->>Super: Process terminated (exitCode = 0)
-        deactivate Process
+        Process-->>Super: 进程退出 (exitCode = 0)
     else 5 秒超时强杀兜底
         Super->>Process: process.destroyForcibly() (SIGKILL)
     end
     Super-->>K3s: Java 进程退出，Pod 终结
-    deactivate Super
 ```
 
 ---
