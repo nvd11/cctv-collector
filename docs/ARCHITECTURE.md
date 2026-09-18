@@ -132,7 +132,6 @@ sequenceDiagram
 
     App->>Super: 启动流拉取任务 (spawn)
     Super->>FFmpeg: 执行 ProcessBuilder (RTSP TCP -> segment copy)
-    activate FFmpeg
     
     loop 持续推流切片
         FFmpeg->>FS: 写入分段切片 (cctv_20260915_230000.mp4)
@@ -151,7 +150,6 @@ sequenceDiagram
         Super->>FFmpeg: 发送 'q' 字符或 SIGINT
         FFmpeg->>FS: 闭合当前正在写的末尾切片
         FFmpeg-->>Super: 进程安全退出
-        deactivate FFmpeg
     end
 ```
 
