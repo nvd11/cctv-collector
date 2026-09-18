@@ -1,6 +1,7 @@
 package com.gateman.cctv.collector.supervisor;
 
 import com.gateman.cctv.collector.config.CollectorConfig;
+import com.gateman.cctv.collector.test.TestCollectorConfig;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
@@ -14,11 +15,10 @@ class FFmpegCommandBuilderTest {
     @Test
     @DisplayName("Should build exact FFmpeg argument list from CollectorConfig")
     void shouldBuildExactFFmpegArgumentList() {
-        CollectorConfig config = createTestConfig(
-                "rtsp://admin:pass123@10.0.1.20:554/stream1",
-                "/mnt/buffer/cctv",
-                900
-        );
+        CollectorConfig config = TestCollectorConfig.createDefault()
+                .withRtspUrl("rtsp://admin:pass123@10.0.1.20:554/stream1")
+                .withBufferDir("/mnt/buffer/cctv")
+                .withSegmentSeconds(900);
 
         List<String> args = FFmpegCommandBuilder.buildArgs(config);
 
@@ -41,11 +41,10 @@ class FFmpegCommandBuilderTest {
     @Test
     @DisplayName("Should adjust segment duration and output path dynamically")
     void shouldAdjustSegmentDurationAndOutputPath() {
-        CollectorConfig config = createTestConfig(
-                "rtsp://127.0.0.1:8554/live",
-                "/data/custom-cctv",
-                60
-        );
+        CollectorConfig config = TestCollectorConfig.createDefault()
+                .withRtspUrl("rtsp://127.0.0.1:8554/live")
+                .withBufferDir("/data/custom-cctv")
+                .withSegmentSeconds(60);
 
         List<String> args = FFmpegCommandBuilder.buildArgs(config);
 
@@ -56,7 +55,7 @@ class FFmpegCommandBuilderTest {
     @Test
     @DisplayName("Should return an unmodifiable list")
     void shouldReturnUnmodifiableList() {
-        CollectorConfig config = createTestConfig("rtsp://test", "/test", 900);
+        CollectorConfig config = TestCollectorConfig.createDefault();
         List<String> args = FFmpegCommandBuilder.buildArgs(config);
 
         assertThatThrownBy(() -> args.add("-extra_param"))
@@ -69,39 +68,5 @@ class FFmpegCommandBuilderTest {
         assertThatThrownBy(() -> FFmpegCommandBuilder.buildArgs(null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("CollectorConfig must not be null");
-    }
-
-    private CollectorConfig createTestConfig(String rtspUrl, String bufferDir, int segmentSeconds) {
-        return new CollectorConfig() {
-            @Override
-            public String rtspUrl() {
-                return rtspUrl;
-            }
-
-            @Override
-            public String bufferDir() {
-                return bufferDir;
-            }
-
-            @Override
-            public int segmentSeconds() {
-                return segmentSeconds;
-            }
-
-            @Override
-            public long minFreeDiskGb() {
-                return 5L;
-            }
-
-            @Override
-            public int reconnectDelaySeconds() {
-                return 5;
-            }
-
-            @Override
-            public int maxReconnectDelaySeconds() {
-                return 60;
-            }
-        };
     }
 }
