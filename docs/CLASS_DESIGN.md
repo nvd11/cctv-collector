@@ -137,7 +137,9 @@ classDiagram
         -AtomicBoolean running
         -AtomicBoolean alive
         +recordFrameProgress() void
+        +recordDisconnection() void
         +recordRestart() void
+        +recordSegmentCompleted() void
         +isStreamStalled(long timeoutMillis) boolean
         +getStatusSnapshot() StreamStatusSnapshot
     }
@@ -241,6 +243,8 @@ sequenceDiagram
     participant Exec as FFmpegProcessExecutor
     participant Process as OS / FFmpeg Process
     participant Pump as FFmpegLogPump
+    participant Watcher as SegmentLifecycleWatcher
+    participant Registry as SegmentRegistry
     participant Tracker as StreamHealthTracker
     participant K3s as K3s Kubelet Probes
 
@@ -267,6 +271,13 @@ sequenceDiagram
                 Process->>Pump: 输出进度流 (frame=... fps=... time=...)
                 Pump->>Tracker: recordFrameProgress()
                 Pump->>Pump: 更新 lastActivityTimestamp
+            end
+
+            opt 录满切片时长触发分段轮转 (如每 15 分钟)
+                Process->>Process: 闭合当前切片并开启新 MP4 文件
+                Pump->>Watcher: 侦测到切片文件切换事件
+                Watcher->>Registry: markClosed(filePath, size)
+                Watcher->>Tracker: recordSegmentCompleted() (累计切片数 +1)
             end
 
             opt K8s 定期健康探针检查
@@ -300,7 +311,7 @@ sequenceDiagram
     else 场景 B：异常退出 (exitCode != 0，如 Wi-Fi 闪断 / 摄像头断电)
         Process-->>Exec: 进程异常退出 (exitCode != 0)
         Exec-->>Super: waitFor() 返回异常退出码
-        Super->>Tracker: recordRestart()
+        Super->>Tracker: recordDisconnection()
         Super->>Super: backoffAttempt++ 并计算指数退避时长 (5s -> 10s -> 20s... max 60s)
         
         opt 退避超长且无帧到达
@@ -445,10 +456,14 @@ sequenceDiagram
 ---
 
 ### 4.4 `SegmentRegistry` & `SegmentLifecycleWatcher` (切片注册与监听仓储)
-- **定位**：内存中高并发线程安全的切片状态仓储
+- **定位**：内存中高并发线程安全的切片状态仓储与文件系统监听中枢
 - **职责**：
   - `SegmentRegistry`：在内存维护最近已完成切片队列（`recentSegments`），上层 API 可以随时查看“刚刚 1 分钟前保存了哪个视频、文件多大、时长多少”；
-  - `SegmentLifecycleWatcher`：监听磁盘文件生成与关闭事件，完成切片实体的瞬时封装与流转。
+  - `SegmentLifecycleWatcher`：
+    1. 监听缓冲目录 `/mnt/buffer/cctv` 中的文件事件（通过 Java NIO `WatchService` 或日志泵通知）；
+    2. 当新切片开始写入时，在 `SegmentRegistry` 中注册为 `WRITING` 状态；
+    3. 当切片写满时长并在磁盘上安全闭合时，将其标记为 `CLOSED` 实体；
+    4. 联动触发 `healthTracker.recordSegmentCompleted()`，使健康大屏上的累计切片计数 `+1`。
 
 ---
 
@@ -534,8 +549,11 @@ sequenceDiagram
   - 线程安全指标收集器，解耦看门狗和对外 HTTP 状态查询；
   - 记录重启频次、运行累计时长、切片完成计数等。
 - **关键方法**：
-  - `public void recordFrameProgress()`: 刷新最新帧到达时间。
+  - `public void recordFrameProgress()`: 刷新最新帧到达时间，将 `alive` 标记为 `true`。
+  - `public void recordDisconnection()`: 发生断网或子进程崩溃时调用，递增异常重启计数，并将 `alive` 标记为 `false`。
+  - `public void recordSegmentCompleted()`: 当切片监视器（`SegmentLifecycleWatcher`）或日志泵监听到一个新切片文件在磁盘上安全闭合时调用，使 `totalSegmentsWritten` 计数器 `+1`，作为 7x24 小时持续出单切片的健康铁证。
   - `public boolean isStreamStalled(long timeoutMillis)`: 判定是否超过阈值无数据（默认 60 秒），作为 Liveness 探针依据。
+  - `public StreamStatusSnapshot getStatusSnapshot()`: 提取只读快照供 REST 监控接口呈现。
 
 ---
 
@@ -552,7 +570,7 @@ sequenceDiagram
     3. **停机信号截流**：进程唤醒后优先判断 `!shouldRun.get()`，若容器正在销毁则立即跳出循环，绝不重新拉起；
     4. **差异化退出码分流**：
        - **正常退出（`exitCode == 0`）**：将指数退避计数器 `backoffAttempt` 重置为 0，**0 毫秒立即拉起下一轮推流**，避免录像产生时间真空断档；
-       - **异常暴毙（`exitCode != 0`）**：递增重试计数 `backoffAttempt++`，上报 `healthTracker.recordRestart()`，并通过 `calculateBackoff()` 计算退避时长（`5s -> 10s -> 20s...`，上限 60 秒），强制休眠后再行重试，**从物理上彻底杜绝 Fork 炸弹**。
+       - **异常暴毙（`exitCode != 0`）**：递增重试计数 `backoffAttempt++`，上报 `healthTracker.recordDisconnection()`，并通过 `calculateBackoff()` 计算退避时长（`5s -> 10s -> 20s...`，上限 60 秒），强制休眠后再行重试，**从物理上彻底杜绝 Fork 炸弹**。
 - **关键方法**：
   - `void onStartup(@Observes StartupEvent ev)`: 启动后台常驻守护线程池。
   - `void onShutdown(@Observes ShutdownEvent ev)`: 设置 `shouldRun.set(false)` 并调用 `executor.stopGracefully(5)`。
