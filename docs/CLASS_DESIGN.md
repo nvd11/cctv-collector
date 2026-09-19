@@ -47,6 +47,20 @@ classDiagram
         <<Utility>>
         +buildArgs(CollectorConfig config) List~String~
         +ensureDirectoryExists(Path dir) void
+        +resolveOutputPathPattern(String bufferDir) String
+    }
+
+    class FFmpegProcessExecutor {
+        <<Dependent / Process Wrapper>>
+        -Process currentProcess
+        -Logger log
+        +start(List~String~ commandArgs) void
+        +waitFor() int
+        +stopGracefully(long timeoutSeconds) boolean
+        +isAlive() boolean
+        +destroyForcibly() void
+        +getErrorStream() InputStream
+        +getPid() long
     }
 
     class VideoStreamProfile {
@@ -133,7 +147,7 @@ classDiagram
         -CollectorConfig config
         -DiskHealthChecker diskChecker
         -StreamHealthTracker healthTracker
-        -Process currentProcess
+        -FFmpegProcessExecutor executor
         -FFmpegLogPump stdoutPump
         -FFmpegLogPump stderrPump
         -ExecutorService workerPool
@@ -141,8 +155,6 @@ classDiagram
         +onStartup(StartupEvent ev) void
         +onShutdown(ShutdownEvent ev) void
         +startSupervisorLoop() void
-        -spawnFFmpegProcess() Process
-        -terminateGracefully(Process process) void
         -calculateBackoff(int attempt) int
     }
 
@@ -190,6 +202,8 @@ classDiagram
     CollectorServiceImpl <-- CollectorLivenessCheck : 探针校验
     CollectorServiceImpl <-- CollectorReadinessCheck : 探针校验
 
+    FFmpegProcessSupervisor *-- FFmpegProcessExecutor : 专属持有独立执行器实例 (1:1 专属组合)
+    FFmpegProcessExecutor *-- Process : 完全封装与隐藏底层 OS Process 句柄
     FFmpegProcessSupervisor --> VideoStreamProfile : 维护视频流画像
     FFmpegProcessSupervisor --> SegmentLifecycleWatcher : 派发切片生命周期事件
     SegmentLifecycleWatcher --> SegmentRegistry : 注册/维护切片状态
@@ -224,6 +238,7 @@ sequenceDiagram
     participant Super as FFmpegProcessSupervisor
     participant Checker as DiskHealthChecker
     participant Builder as FFmpegCommandBuilder
+    participant Exec as FFmpegProcessExecutor
     participant Process as OS / FFmpeg Process
     participant Pump as FFmpegLogPump
     participant Tracker as StreamHealthTracker
@@ -241,7 +256,11 @@ sequenceDiagram
             Checker-->>Super: true (通过)
             Super->>Builder: buildArgs(config)
             Builder-->>Super: 完整的 argv 数组
-            Super->>Process: ProcessBuilder.start()
+            Super->>Exec: start(argv)
+            Exec->>Process: ProcessBuilder.start()
+            Exec-->>Super: 启动完成 (Process 句柄内部完全封装)
+            Super->>Exec: getErrorStream()
+            Exec-->>Super: 返回 stderr 管道流
             Super->>Pump: 启动 stdout/stderr 抽取线程
 
             loop 帧数据实时切片
@@ -258,30 +277,44 @@ sequenceDiagram
     end
 ```
 
-### 3.2 摄像机断网异常与指数退避时序
+### 3.2 进程退出状态机与异常指数退避时序
+
+看门狗根据进程退出状态码（`exitCode`）执行差异化状态流转：**正常退出（`exitCode == 0`）零延迟无缝接力，异常暴毙（`exitCode != 0`）强制退避自愈**：
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Process as FFmpeg Process
+    participant Exec as FFmpegProcessExecutor
     participant Super as FFmpegProcessSupervisor
     participant Tracker as StreamHealthTracker
     participant K3s as K3s Kubelet
 
-    Note over Process: 局域网摄像机断电 / Wi-Fi 闪断
-    Process-->>Super: 进程退出 (exitCode != 0)
-    Super->>Tracker: recordRestart()
-    
-    Super->>Super: 计算指数退避等待时长 (5s -> 10s -> 20s... max 60s)
-    
-    opt 退避超长且无帧到达
-        K3s->>Tracker: GET /q/health/live (超时阈值 60s)
-        Tracker-->>K3s: 503 DOWN (Stream Stalled)
-        K3s->>Super: 发送 SIGTERM 重建 Pod 兜底
-    end
+    alt 场景 A：正常退出 (exitCode == 0，如配置重载或录像段顺畅过渡)
+        Process-->>Exec: 进程退出 (exitCode = 0)
+        Exec-->>Super: waitFor() 返回 0
+        Super->>Super: backoffAttempt = 0 (计数器归零)
+        Super->>Exec: start(argv)
+        Exec->>Process: 0 毫秒立即拉起新一轮进程
+        Exec-->>Super: 启动成功 (不留时间黑洞)
+    else 场景 B：异常退出 (exitCode != 0，如 Wi-Fi 闪断 / 摄像头断电)
+        Process-->>Exec: 进程异常退出 (exitCode != 0)
+        Exec-->>Super: waitFor() 返回异常退出码
+        Super->>Tracker: recordRestart()
+        Super->>Super: backoffAttempt++ 并计算指数退避时长 (5s -> 10s -> 20s... max 60s)
+        
+        opt 退避超长且无帧到达
+            K3s->>Tracker: GET /q/health/live (超时阈值 60s)
+            Tracker-->>K3s: 503 DOWN (Stream Stalled)
+            K3s->>Super: 发送 SIGTERM 重建 Pod 兜底
+        end
 
-    Super->>Process: 重新拉起 ProcessBuilder.start()
-    Note over Super: 恢复推流，重置退避计数器
+        Super->>Super: 强制休眠退避时长 (Thread.sleep)
+        Super->>Exec: start(argv)
+        Exec->>Process: 重新拉起子进程并内部托管
+        Exec-->>Super: 重启成功
+        Note over Super: 恢复推流，重置退避计数器
+    end
 ```
 
 ### 3.3 容器销毁与优雅停机时序 (Graceful Shutdown)
@@ -291,19 +324,23 @@ sequenceDiagram
     autonumber
     participant K3s as K3s / Docker Daemon
     participant Super as FFmpegProcessSupervisor
+    participant Exec as FFmpegProcessExecutor
     participant Process as FFmpeg Process
     participant FS as Buffer Volume (/mnt/buffer/cctv)
 
     K3s->>Super: SIGTERM 信号 / onShutdown(ShutdownEvent)
     Super->>Super: shouldRun.set(false)
-    Super->>Process: 向 stdin 输入字符 'q'
+    Super->>Exec: stopGracefully(5)
+    Exec->>Process: 向 stdin 输入字符 'q'
     Note over Process: FFmpeg 接收到 'q'，开始封装当前正在写入的 MP4 尾部
     Process->>FS: 刷新并闭合 moov atom 索引头
     
     alt FFmpeg 5 秒内自愿安全退出
-        Process-->>Super: 进程退出 (exitCode = 0)
+        Process-->>Exec: 进程退出 (exitCode = 0)
+        Exec-->>Super: true (成功安全退出)
     else 5 秒超时强杀兜底
-        Super->>Process: process.destroyForcibly() (SIGKILL)
+        Exec->>Process: process.destroyForcibly() (SIGKILL)
+        Exec-->>Super: false (超时强制杀死)
     end
     Super-->>K3s: Java 进程退出，Pod 终结
 ```
@@ -453,10 +490,31 @@ sequenceDiagram
   - 使用 `-strftime 1` 配合 `cctv_%Y%m%d_%H%M%S.mp4` 保证原子切片文件名天然具备时间可排序性。
 - **关键方法**：
   - `public static List<String> buildArgs(CollectorConfig config)`: 返回标准 `List<String>` 供 `ProcessBuilder` 消费。
+  - `public static String resolveOutputPathPattern(String bufferDir)`: 解析生成带时间戳模板的绝对文件路径。
 
 ---
 
-### 4.4 `FFmpegLogPump` (类)
+### 4.4 `FFmpegProcessExecutor` (类)
+- **包路径**：`com.gateman.cctv.collector.supervisor`
+- **作用域**：`@Dependent`（独立实例，与看门狗 1:1 专属绑定）
+- **定位**：**有状态的操作系统进程封装器 (Stateful OS Process Wrapper & Encapsulator)**
+- **设计要点**：
+  - **彻底的信息隐藏 (Information Hiding)**：将底层操作系统 `Process` 句柄、`pid`、`stdin` 输入管道与 `stderr` 管道完全封装在内部，外部调用者（如 `Supervisor`）无需接触底层的 `java.lang.Process` 类；
+  - **支持多路并发扩展**：采用 CDI `@Dependent` 伪作用域，使得未来每增加一路摄像头（如客厅、门口、庭院），专属的 `Supervisor` 都能获得一个独立的 `FFmpegProcessExecutor` 实例，各实例独享内部 `currentProcess` 状态，天然并发隔离、零状态踩踏；
+  - **优雅停机保障**：向子进程内部 `stdin` 管道注入 `'q'` 字符并刷新，随后在指定秒数内（如 5 秒）等待其自愿闭合 MP4 文件头退出；若超时则自动触发 `destroyForcibly()`（SIGKILL）保底强杀；
+  - **高可测性**：在单元测试 `Supervisor` 业务逻辑时，可直接通过 Mockito 模拟 `FFmpegProcessExecutor`，零真实进程开销。
+- **关键方法**：
+  - `public void start(List<String> commandArgs) throws IOException`: 启动 FFmpeg 子进程并由内部持有管理。
+  - `public int waitFor() throws InterruptedException`: 阻塞等待内部子进程退出并返回操作系统 exitCode。
+  - `public boolean stopGracefully(long timeoutSeconds)`: 向内部进程 `stdin` 发送 `'q'` 触发优雅收尾，超时强杀。
+  - `public boolean isAlive()`: 判定内部子进程当前是否在存活运行。
+  - `public void destroyForcibly()`: 强制销毁内部子进程。
+  - `public InputStream getErrorStream()`: 获取子进程 stderr 管道流供 `FFmpegLogPump` 抽取。
+  - `public long getPid()`: 安全获取底层进程 PID。
+
+---
+
+### 4.5 `FFmpegLogPump` (类)
 - **包路径**：`com.gateman.cctv.collector.supervisor`
 - **特性**：实现 `Runnable`，独立线程运行
 - **设计要点**：
@@ -469,7 +527,7 @@ sequenceDiagram
 
 ---
 
-### 4.5 `StreamHealthTracker` (类)
+### 4.6 `StreamHealthTracker` (类)
 - **包路径**：`com.gateman.cctv.collector.supervisor`
 - **作用域**：`@ApplicationScoped`
 - **设计要点**：
@@ -481,18 +539,29 @@ sequenceDiagram
 
 ---
 
-### 4.6 `FFmpegProcessSupervisor` (类)
+### 4.7 `FFmpegProcessSupervisor` (类)
 - **包路径**：`com.gateman.cctv.collector.supervisor`
 - **作用域**：`@ApplicationScoped`
 - **设计要点**：
-  - 整个子服务的核心控制器（Master Watchdog）；
+  - 整个子服务的核心控制器与看门狗状态机（Master Watchdog State Machine）；
   - 监听 Quarkus 生命周期注解 `@Observes StartupEvent` 与 `@Observes ShutdownEvent`；
-  - 维护非阻塞重连循环，防止进程退出后容器退出导致被 K8s CrashLoopBackOff 惩罚；
-  - 实现向子进程 stdin 发送字符 `'q'` 的优雅停机逻辑，避免 MP4 文件头部索引损坏。
+  - 专属持有独立的 `@Dependent FFmpegProcessExecutor` 实例，自身专注维护事件循环、磁盘熔断检查与退出码状态分流；
+  - **核心退出状态机逻辑（supervisorLoop）**：
+    1. **前置熔断审计**：每次启动前调用 `diskChecker.isDiskHealthy()`，若磁盘不足则打 ERROR 日志并休眠 30 秒，绝不盲目起进程；
+    2. **阻塞等待子进程**：调用 `executor.waitFor()`，当前守护线程进入低功耗休眠挂起状态，由 Linux 内核维护事件唤醒，零 CPU 占用；
+    3. **停机信号截流**：进程唤醒后优先判断 `!shouldRun.get()`，若容器正在销毁则立即跳出循环，绝不重新拉起；
+    4. **差异化退出码分流**：
+       - **正常退出（`exitCode == 0`）**：将指数退避计数器 `backoffAttempt` 重置为 0，**0 毫秒立即拉起下一轮推流**，避免录像产生时间真空断档；
+       - **异常暴毙（`exitCode != 0`）**：递增重试计数 `backoffAttempt++`，上报 `healthTracker.recordRestart()`，并通过 `calculateBackoff()` 计算退避时长（`5s -> 10s -> 20s...`，上限 60 秒），强制休眠后再行重试，**从物理上彻底杜绝 Fork 炸弹**。
+- **关键方法**：
+  - `void onStartup(@Observes StartupEvent ev)`: 启动后台常驻守护线程池。
+  - `void onShutdown(@Observes ShutdownEvent ev)`: 设置 `shouldRun.set(false)` 并调用 `executor.stopGracefully(5)`。
+  - `void startSupervisorLoop()`: 看门狗核心事件循环。
+  - `int calculateBackoff(int attempt)`: 根据配置中的 `reconnectDelaySeconds` 与 `maxReconnectDelaySeconds` 计算当前退避秒数。
 
 ---
 
-### 4.7 `CollectorService` (接口) 与 `CollectorServiceImpl` (实现类)
+### 4.8 `CollectorService` (接口) 与 `CollectorServiceImpl` (实现类)
 - **包路径**：`com.gateman.cctv.collector.service`
 - **定位**：**业务领域门面服务 (Domain Service Facade)**
 - **设计要点**：
@@ -509,7 +578,7 @@ sequenceDiagram
 
 ---
 
-### 4.8 `CollectorLivenessCheck` & `CollectorReadinessCheck` (类)
+### 4.9 `CollectorLivenessCheck` & `CollectorReadinessCheck` (类)
 - **包路径**：`com.gateman.cctv.collector.health`
 - **注解**：分别标注 `@Liveness` 与 `@Readiness`
 - **设计要点**：
@@ -518,7 +587,7 @@ sequenceDiagram
 
 ---
 
-### 4.9 `StreamStatusResource` (类)
+### 4.10 `StreamStatusResource` (类)
 - **包路径**：`com.gateman.cctv.collector.resource`
 - **注解**：`@Path("/api")`
 - **设计要点**：
