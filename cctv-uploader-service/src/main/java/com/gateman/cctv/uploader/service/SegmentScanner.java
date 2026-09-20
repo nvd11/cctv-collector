@@ -106,15 +106,19 @@ public class SegmentScanner {
      * {@code {remoteBaseDir}/{locationName}/{YYYY-MM-DD}/{fileName}}
      */
     public String buildRemotePath(Path localPath) {
+        return buildRemotePath(config.remoteBaseDir(), config.locationName(), localPath);
+    }
+
+    public static String buildRemotePath(String remoteBaseDir, String locationName, Path localPath) {
         String fileName = localPath.getFileName().toString();
         String dateFolder = parseDateFolder(fileName);
 
-        String base = config.remoteBaseDir();
+        String base = remoteBaseDir != null ? remoteBaseDir : "/Quark/CCTV_Records";
         if (base.endsWith("/")) {
             base = base.substring(0, base.length() - 1);
         }
 
-        return base + "/" + config.locationName() + "/" + dateFolder + "/" + fileName;
+        return base + "/" + locationName + "/" + dateFolder + "/" + fileName;
     }
 
     public static String parseDateFolder(String fileName) {
@@ -125,12 +129,12 @@ public class SegmentScanner {
         return "archive";
     }
 
-    private String deriveTaskId(Path path) {
+    public static String deriveTaskId(Path path) {
         String fileName = path.getFileName().toString();
         return "task_" + (fileName.endsWith(".mp4") ? fileName.substring(0, fileName.length() - 4) : fileName);
     }
 
-    private long safeGetFileSize(Path path) {
+    public static long safeGetFileSize(Path path) {
         try {
             return Files.size(path);
         } catch (IOException e) {
