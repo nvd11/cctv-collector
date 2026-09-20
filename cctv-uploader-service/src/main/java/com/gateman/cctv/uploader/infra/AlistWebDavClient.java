@@ -34,7 +34,7 @@ public class AlistWebDavClient {
 
     private static final Logger LOG = Logger.getLogger(AlistWebDavClient.class);
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
-    private static final Duration UPLOAD_TIMEOUT = Duration.ofMinutes(10);
+    private static final Duration UPLOAD_TIMEOUT = Duration.ofMinutes(30);
 
     private final UploaderConfig config;
     private final HttpClient httpClient;
@@ -177,6 +177,33 @@ public class AlistWebDavClient {
             }
         } catch (Exception e) {
             LOG.errorf("Upload exception for %s: %s", remotePath, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Attempts to delete a remote file or purge an uncommitted/aborted upload session.
+     *
+     * @param remotePath relative remote file path
+     * @return {@code true} if deleted or not found, {@code false} if request failed
+     */
+    public boolean deleteRemoteFile(String remotePath) {
+        String fullUrl = buildFullUrl(remotePath);
+        LOG.debugf("Purging remote path via DELETE: %s", fullUrl);
+
+        try {
+            HttpRequest request = HttpRequest.newBuilder()
+                    .uri(URI.create(fullUrl))
+                    .method("DELETE", HttpRequest.BodyPublishers.noBody())
+                    .header("Authorization", buildAuthHeader())
+                    .timeout(REQUEST_TIMEOUT)
+                    .build();
+
+            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+            int status = response.statusCode();
+            return status == 200 || status == 204 || status == 404;
+        } catch (Exception e) {
+            LOG.debugf("DELETE request for %s failed: %s", fullUrl, e.getMessage());
             return false;
         }
     }

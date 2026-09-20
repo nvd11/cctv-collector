@@ -116,6 +116,8 @@ public class UploadExecutorService {
             cleanLocalFile(localPath);
             return true;
         } else {
+            // Attempt to purge any incomplete/corrupted remote session on Alist/Quark
+            alistClient.deleteRemoteFile(task.remotePath());
             taskDao.markFailed(taskId, "HTTP upload failed or timed out");
             healthTracker.recordUploadFailure();
             return false;

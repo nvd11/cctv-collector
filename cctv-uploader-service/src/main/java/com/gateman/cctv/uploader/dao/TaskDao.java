@@ -7,6 +7,7 @@ import org.jboss.logging.Logger;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
@@ -72,10 +73,12 @@ public class TaskDao {
     public List<UploadTask> findPendingTasks() {
         List<UploadTask> pending = new ArrayList<>();
         for (UploadTask task : taskStore.values()) {
-            if (task.status() == TaskStatus.PENDING) {
+            if (task.status() == TaskStatus.PENDING || (task.status() == TaskStatus.FAILED && task.isEligibleForRetry(3))) {
                 pending.add(task);
             }
         }
+        // Ensure oldest segments are uploaded first (FIFO order by timestamp filename)
+        pending.sort(Comparator.comparing(UploadTask::fileName));
         return Collections.unmodifiableList(pending);
     }
 
