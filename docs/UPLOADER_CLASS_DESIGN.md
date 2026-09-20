@@ -370,7 +370,8 @@ sequenceDiagram
     - `cleanupPolicy()` ➔ 本地清理动作，可选 `DELETE` 或 `NONE`（默认 `DELETE`）；
     - `minRetainedFiles()` ➔ 本地 SSD 滑动窗口最少保留切片数（默认 `10`，对应环境变量 `CCTV_UPLOADER_MIN_RETAINED_FILES`）；
     - `maxConcurrentUploads()` ➔ 上传并发度（默认 `1`，平滑家庭网络）；
-    - `scanCronExpression()` ➔ 定时轮询表达式（默认每 5 分钟 `0 */5 * * * ?`）。
+    - `scanCronExpression()` ➔ 定时轮询表达式（默认每 5 分钟 `0 */5 * * * ?`）；
+  - **容器时区规范**：由 K8s ConfigMap 统一注入标准环境变量 `TZ: "Asia/Shanghai"`，确保调度器、Java 日志与日期归档严格按东八区中国自然日执行。
 
 ---
 
