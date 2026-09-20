@@ -98,12 +98,13 @@ flowchart TD
 
 ---
 
-## 📚 项目技术文档
+## 📚 项目技术文档与博客实战
 
 - 📋 **[需求规格说明书 (Requirements Specification)](docs/REQUIREMENTS.md)**
 - 🏗️ **[整体架构设计文档 (Architecture Design Document)](docs/ARCHITECTURE.md)**
 - 🏛️ **[采集服务详细类设计 (Collector Class Design)](docs/CLASS_DESIGN.md)**
 - 🏛️ **[上传服务详细类设计 (Uploader Class Design)](docs/UPLOADER_CLASS_DESIGN.md)**
+- 📝 **[实战博客：用乞丐版摄像头+开发板+夸克网盘实现 24×7 免费监控存储与回看](blogs/build-zero-cost-cctv-storage-pipeline-with-quark-netdisk.md)**
 
 ---
 
