@@ -51,4 +51,12 @@ public record TestCollectorConfig(
     public TestCollectorConfig withMinFreeDiskGb(long minFreeDiskGb) {
         return new TestCollectorConfig(rtspUrl, bufferDir, segmentSeconds, minFreeDiskGb, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
+
+    public TestCollectorConfig withReconnectDelaySeconds(int reconnectDelaySeconds) {
+        return new TestCollectorConfig(rtspUrl, bufferDir, segmentSeconds, minFreeDiskGb, reconnectDelaySeconds, maxReconnectDelaySeconds);
+    }
+
+    public TestCollectorConfig withMaxReconnectDelaySeconds(int maxReconnectDelaySeconds) {
+        return new TestCollectorConfig(rtspUrl, bufferDir, segmentSeconds, minFreeDiskGb, reconnectDelaySeconds, maxReconnectDelaySeconds);
+    }
 }
