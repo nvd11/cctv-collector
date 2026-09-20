@@ -18,14 +18,17 @@
    - 内置看门狗与 K3s Liveness Probe，支持摄像机掉线自动重试与优雅退出保护。
 2. **第二阶段（上传服务 `cctv-uploader-service`）**：
    - 同样编排部署在 Radxa K3s 节点，通过挂载同一共享缓冲卷定期扫描已闭合切片；
-   - 异步批量上传至 Alist 挂载的云端网盘（阿里云盘/百度网盘/夸克），并自动轮转清理旧文件。
+   - 异步批量流式上传至 Alist 挂载的云端网盘（阿里云盘/百度网盘/夸克），国内专线免代理直连加速；
+   - **本地滑动窗口缓存（Rolling Window Cache）**：本地 SSD 始终保留最新的 10 个切片（~2.5 小时内网秒开回看），仅对已入库的更早历史切片执行 FIFO 自动淘汰。
 
 ---
 
 ## 📚 项目技术文档
 
 - 📋 **[需求规格说明书 (Requirements Specification)](docs/REQUIREMENTS.md)**
-- 🏗️ **[架构设计文档 (Architecture Design Document)](docs/ARCHITECTURE.md)**
+- 🏗️ **[整体架构设计文档 (Architecture Design Document)](docs/ARCHITECTURE.md)**
+- 🏛️ **[采集服务详细类设计 (Collector Class Design)](docs/CLASS_DESIGN.md)**
+- 🏛️ **[上传服务详细类设计 (Uploader Class Design)](docs/UPLOADER_CLASS_DESIGN.md)**
 
 ---
 
@@ -37,11 +40,21 @@
 - FFmpeg 5.0+
 
 ### 配置说明
-支持通过系统环境变量或 `.env` 覆盖配置参数：
+支持通过系统环境变量或 ConfigMap 覆盖配置参数：
+
+#### 采集端 (`cctv-collector`)
 - `CCTV_RTSP_URL`: 摄像机 RTSP 地址（默认 `rtsp://admin:your_password@10.0.1.20:554/stream1`）
-- `CCTV_BUFFER_DIR`: 视频切片暂存目录（默认 `/tmp/cctv_buffer` 或指定 StarFive 挂载点）
+- `CCTV_BUFFER_DIR`: 视频切片暂存目录（默认 `/tmp/cctv_buffer` 或 Radxa 外接固态）
 - `CCTV_SEGMENT_SECONDS`: 切片分段时长（默认 `900` 秒 / 15 分钟）
 - `CCTV_MIN_FREE_DISK_GB`: 磁盘安全熔断阈值（默认 `5` GB）
+
+#### 上传端 (`cctv-uploader`)
+- `CCTV_UPLOADER_BUFFER_DIR`: 共享切片缓冲目录（默认 `/mnt/buffer/cctv`）
+- `CCTV_UPLOADER_ALIST_ENDPOINT`: Alist WebDAV 地址（默认 `http://10.0.1.227:5244/dav`）
+- `CCTV_UPLOADER_REMOTE_BASE_DIR`: 远端网盘基础根目录（默认 `/Quark/CCTV_Records`）
+- `CCTV_UPLOADER_LOCATION_NAME`: 监控机位名称（默认 `锦绣世家_客厅`）
+- `CCTV_UPLOADER_MIN_RETAINED_FILES`: 本地滑动窗口最少留存切片数（默认 `10`，覆盖约 2.5 小时）
+- `CCTV_UPLOADER_CLEANUP_POLICY`: 清理策略（默认 `DELETE`）
 
 ---
 
