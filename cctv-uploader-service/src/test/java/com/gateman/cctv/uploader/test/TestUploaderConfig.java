@@ -15,6 +15,7 @@ public record TestUploaderConfig(
         long minFileAgeSeconds,
         int maxConcurrentUploads,
         String cleanupPolicy,
+        int minRetainedFiles,
         String scanCronExpression,
         int reconnectDelaySeconds,
         int maxReconnectDelaySeconds
@@ -31,6 +32,7 @@ public record TestUploaderConfig(
                 60L,
                 1,
                 "DELETE",
+                10,
                 "0 */5 * * * ?",
                 5,
                 300
@@ -38,22 +40,26 @@ public record TestUploaderConfig(
     }
 
     public TestUploaderConfig withBufferDir(String bufferDir) {
-        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
 
     public TestUploaderConfig withAlistEndpoint(String alistEndpoint) {
-        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
 
     public TestUploaderConfig withLocationName(String locationName) {
-        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
 
     public TestUploaderConfig withMinFileAgeSeconds(long minFileAgeSeconds) {
-        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
 
     public TestUploaderConfig withCleanupPolicy(String cleanupPolicy) {
-        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
+    }
+
+    public TestUploaderConfig withMinRetainedFiles(int minRetainedFiles) {
+        return new TestUploaderConfig(bufferDir, alistEndpoint, alistUsername, alistPassword, remoteBaseDir, locationName, minFileAgeSeconds, maxConcurrentUploads, cleanupPolicy, minRetainedFiles, scanCronExpression, reconnectDelaySeconds, maxReconnectDelaySeconds);
     }
 }

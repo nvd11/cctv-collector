@@ -72,6 +72,14 @@ public interface UploaderConfig {
     String cleanupPolicy();
 
     /**
+     * Minimum number of finalized segment files to retain locally in the buffer directory.
+     * Maintains a rolling window cache of recent recordings on local SSD.
+     * Default: 10 segments (approx 2.5 hours at 15-minute intervals).
+     */
+    @WithDefault("10")
+    int minRetainedFiles();
+
+    /**
      * Cron expression for the periodic directory scan and upload scheduler.
      * Default: every 5 minutes ("0 *&#47;5 * * * ?").
      */

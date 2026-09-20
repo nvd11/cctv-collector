@@ -26,5 +26,6 @@ class UploaderConfigTest {
         assertThat(config.minFileAgeSeconds()).isEqualTo(60L);
         assertThat(config.maxConcurrentUploads()).isEqualTo(1);
         assertThat(config.cleanupPolicy()).isEqualTo("DELETE");
+        assertThat(config.minRetainedFiles()).isEqualTo(10);
     }
 }
