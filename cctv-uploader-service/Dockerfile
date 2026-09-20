@@ -28,6 +28,7 @@ RUN apt-get update \
 RUN groupadd -r cctv --gid 1000 && useradd -r -g cctv --uid 1000 -d /app cctv
 
 COPY --from=build --chown=cctv:cctv /work/cctv-uploader-service/target/*-runner /app/application
+RUN chmod +x /app/application
 
 USER 1000
 EXPOSE 8082
