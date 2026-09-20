@@ -100,7 +100,7 @@ classDiagram
     class SegmentLifecycleWatcher {
         <<ApplicationScoped>>
         -CollectorConfig config
-        -SegmentRegistry segmentRegistry
+        -SegmentDao segmentDao
         -Logger log
         +onSegmentOpened(Path tmpFile) VideoSegment
         +onSegmentCompleted(Path closedFile) VideoSegment
@@ -108,14 +108,16 @@ classDiagram
         +scanBufferDirectory() List~VideoSegment~
     }
 
-    class SegmentRegistry {
-        <<ApplicationScoped>>
+    class SegmentDao {
+        <<ApplicationScoped / DAO>>
         -ConcurrentMap~String, VideoSegment~ activeSegments
         -ConcurrentLinkedDeque~VideoSegment~ recentSegments
         +registerWriting(Path path) VideoSegment
         +markClosed(Path path, long size) VideoSegment
         +getRecentSegments(int limit) List~VideoSegment~
         +getLatestSegment() Optional~VideoSegment~
+        +findReadyForUpload() List~VideoSegment~
+        +count() long
     }
 
     class FFmpegLogPump {
@@ -177,7 +179,7 @@ classDiagram
         -DiskHealthChecker diskChecker
         -FFmpegProcessSupervisor supervisor
         -StreamHealthTracker healthTracker
-        -SegmentRegistry segmentRegistry
+        -SegmentDao segmentDao
         +startCollection() void
         +stopCollection() void
         +restartCollection() void
@@ -199,7 +201,7 @@ classDiagram
     CollectorServiceImpl --> FFmpegProcessSupervisor : 调度核心进程
     CollectorServiceImpl --> DiskHealthChecker : 空间审计
     CollectorServiceImpl --> StreamHealthTracker : 查询与聚合状态
-    CollectorServiceImpl --> SegmentRegistry : 获取切片领域实体
+    CollectorServiceImpl --> SegmentDao : 获取切片领域实体
     CollectorServiceImpl <-- StreamStatusResource : 门面调用
     CollectorServiceImpl <-- CollectorLivenessCheck : 探针校验
     CollectorServiceImpl <-- CollectorReadinessCheck : 探针校验
@@ -208,8 +210,8 @@ classDiagram
     FFmpegProcessExecutor *-- Process : 完全封装与隐藏底层 OS Process 句柄
     FFmpegProcessSupervisor --> VideoStreamProfile : 维护视频流画像
     FFmpegProcessSupervisor --> SegmentLifecycleWatcher : 派发切片生命周期事件
-    SegmentLifecycleWatcher --> SegmentRegistry : 注册/维护切片状态
-    SegmentRegistry *-- VideoSegment : 管理切片集合
+    SegmentLifecycleWatcher --> SegmentDao : 注册/维护切片状态
+    SegmentDao *-- VideoSegment : 管理切片集合
     VideoSegment *-- SegmentStatus : 状态枚举
 
     %% 依赖与关联关系
@@ -244,7 +246,7 @@ sequenceDiagram
     participant Process as OS / FFmpeg Process
     participant Pump as FFmpegLogPump
     participant Watcher as SegmentLifecycleWatcher
-    participant Registry as SegmentRegistry
+    participant Dao as SegmentDao
     participant Tracker as StreamHealthTracker
     participant K3s as K3s Kubelet Probes
 
@@ -276,7 +278,7 @@ sequenceDiagram
             opt 录满切片时长触发分段轮转 (如每 15 分钟)
                 Process->>Process: 闭合当前切片并开启新 MP4 文件
                 Pump->>Watcher: 侦测到切片文件切换事件
-                Watcher->>Registry: markClosed(filePath, size)
+                Watcher->>Dao: markClosed(filePath, size)
                 Watcher->>Tracker: recordSegmentCompleted() (累计切片数 +1)
             end
 
@@ -368,7 +370,7 @@ sequenceDiagram
     participant Service as CollectorServiceImpl
     participant Tracker as StreamHealthTracker
     participant Checker as DiskHealthChecker
-    participant Registry as SegmentRegistry
+    participant Dao as SegmentDao
     participant Super as FFmpegProcessSupervisor
 
     Note over Client,Super: 场景 1：获取全景状态快照 (GET /api/status)
@@ -378,8 +380,8 @@ sequenceDiagram
     Tracker-->>Service: 帧率、运行时间、断流重启次数、推流健康度
     Service->>Checker: getFreeDiskSpaceGb()
     Checker-->>Service: 磁盘剩余容量 (GB)
-    Service->>Registry: getLatestSegment()
-    Registry-->>Service: 最新活跃切片实体 (VideoSegment)
+    Service->>Dao: getLatestSegment()
+    Dao-->>Service: 最新活跃切片实体 (VideoSegment)
     Service-->>Resource: StreamStatusSnapshot (聚合快照)
     Resource-->>Client: 200 OK (JSON 响应快照)
 
@@ -396,8 +398,8 @@ sequenceDiagram
     Note over Client,Super: 场景 3：已闭合切片清单查询 (GET /api/segments?limit=10)
     Client->>Resource: GET /api/segments?limit=10
     Resource->>Service: getRecentSegments(10)
-    Service->>Registry: getRecentSegments(10)
-    Registry-->>Service: List~VideoSegment~ (已就绪切片清单)
+    Service->>Dao: getRecentSegments(10)
+    Dao-->>Service: List~VideoSegment~ (已就绪切片清单)
     Service-->>Resource: List~VideoSegment~
     Resource-->>Client: 200 OK (切片实体 JSON 数组)
 ```
@@ -455,14 +457,17 @@ sequenceDiagram
 
 ---
 
-### 4.4 `SegmentRegistry` & `SegmentLifecycleWatcher` (切片注册与监听仓储)
-- **定位**：内存中高并发线程安全的切片状态仓储与文件系统监听中枢
-- **职责**：
-  - `SegmentRegistry`：在内存维护最近已完成切片队列（`recentSegments`），上层 API 可以随时查看“刚刚 1 分钟前保存了哪个视频、文件多大、时长多少”；
+### 4.4 `SegmentDao` (数据访问对象) & `SegmentLifecycleWatcher` (切片监视器)
+- **定位**：企业级数据访问对象（DAO）与文件系统监听中枢
+- **包路径**：
+  - `SegmentDao`：`com.gateman.cctv.collector.dao`
+  - `SegmentLifecycleWatcher`：`com.gateman.cctv.collector.service`
+- **职责划分**：
+  - `SegmentDao`：企业级数据访问契约，以高并发线程安全集合（`ConcurrentMap` + `ConcurrentLinkedDeque`）作为内存高速只读镜像，负责切片元数据的持久注册、就绪查找与状态流转；
   - `SegmentLifecycleWatcher`：
-    1. 监听缓冲目录 `/mnt/buffer/cctv` 中的文件事件（通过 Java NIO `WatchService` 或日志泵通知）；
-    2. 当新切片开始写入时，在 `SegmentRegistry` 中注册为 `WRITING` 状态；
-    3. 当切片写满时长并在磁盘上安全闭合时，将其标记为 `CLOSED` 实体；
+    1. 监听缓冲目录 `/mnt/buffer/cctv` 中的文件变更（通过 Java NIO `WatchService` 或日志泵通知）；
+    2. 当新切片开始写入时，在 `SegmentDao` 中登记为 `WRITING` 状态；
+    3. 当切片写满时长并在磁盘上安全闭合时，调用 `SegmentDao.markClosed(...)` 将其标记为 `CLOSED` 实体；
     4. 联动触发 `healthTracker.recordSegmentCompleted()`，使健康大屏上的累计切片计数 `+1`。
 
 ---
@@ -533,12 +538,15 @@ sequenceDiagram
 - **包路径**：`com.gateman.cctv.collector.supervisor`
 - **特性**：实现 `Runnable`，独立线程运行
 - **设计要点**：
-  - FFmpeg 将推流元数据与进度统计输出至 `stderr`，若不持续清空管道，Linux 默认的 64KB Pipe Buffer 填满后将导致操作系统阻塞子进程；
-  - 解析进度文本（如 `frame=` 或 `time=`），实时驱动心跳更新。
+  - **FFmpeg 标准流重定向规范**：FFmpeg 规定 `stdout` 仅供输出纯媒体二进制流，其所有运行日志、错误诊断和关键推流进度（`frame=... fps=... time=...`）**强制统一输出至 `stderr`**；
+  - **管道获取与衔接**：通过 `FFmpegProcessExecutor.getErrorStream()` 拿到底层进程 `stderr` 管道的 Java 输入流，传给 `FFmpegLogPump` 进行非阻塞消费；
+  - **杜绝 64KB 管道挂起 (Pipe Buffer Drain)**：Linux 内核默认管道缓冲区仅 64KB，若不持续抽空，20~30 秒即可填满并导致操作系统挂起冻结 FFmpeg 子进程；
+  - **驱动秒级心跳**：实时从 `stderr` 中正则匹配提取视频帧到达标识，高频驱动 `healthTracker.recordFrameProgress()` 刷新存活时间戳，与分钟级物理切片落盘监视器形成“秒级心跳 + 分钟级实物”的双轨互补。
 - **关键字段与方法**：
   - `private final AtomicLong lastActivityTimestamp`: 毫秒级时间戳。
   - `public void run()`: 使用 `BufferedReader.readLine()` 循环消费并分发日志。
   - `public long getLastActivityTime()`: 供外部判定流是否产生僵死。
+  - `public static boolean isFrameProgressLine(String line)`: 判定是否为帧进度行。
 
 ---
 
@@ -558,7 +566,7 @@ sequenceDiagram
 ---
 
 ### 4.7 `FFmpegProcessSupervisor` (类)
-- **包路径**：`com.gateman.cctv.collector.supervisor`
+- **包路径**：`com.gateman.cctv.collector.service`
 - **作用域**：`@ApplicationScoped`
 - **设计要点**：
   - 整个子服务的核心控制器与看门狗状态机（Master Watchdog State Machine）；
