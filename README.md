@@ -10,16 +10,91 @@
 
 ## 🎯 设计理念：两段式解耦流水线
 
-整个体系采用 **采集缓冲** 与 **网盘上传** 两段式彻底解耦的架构：
+整个体系采用 **采集缓冲（Collector）** 与 **网盘上传（Uploader）** 两段式彻底解耦的云原生流媒体架构：
 
-1. **第一阶段（采集服务 `cctv-collector-service`）**：
+1. **第一阶段（采集端 `cctv-collector-service`）**：
    - 跑在 Radxa K3s 节点（`10.0.1.105`），通过 RTSP TCP 抓取摄像机视频流；
-   - 零 CPU 转码消耗（Stream Copy），每 15 分钟无损切片暂存于挂载的缓冲卷；
+   - 零 CPU 转码消耗（Stream Copy），每 15 分钟无损切片暂存于挂载的外接固态缓冲卷；
    - 内置看门狗与 K3s Liveness Probe，支持摄像机掉线自动重试与优雅退出保护。
-2. **第二阶段（上传服务 `cctv-uploader-service`）**：
+2. **第二阶段（上传端 `cctv-uploader-service`）**：
    - 同样编排部署在 Radxa K3s 节点，通过挂载同一共享缓冲卷定期扫描已闭合切片；
    - 异步批量流式上传至 Alist 挂载的云端网盘（阿里云盘/百度网盘/夸克），国内专线免代理直连加速；
    - **本地滑动窗口缓存（Rolling Window Cache）**：本地 SSD 始终保留最新的 10 个切片（~2.5 小时内网秒开回看），仅对已入库的更早历史切片执行 FIFO 自动淘汰。
+
+---
+
+## 🏗️ Collector 与 Uploader 协同运作架构 (Collaboration Architecture)
+
+两个微服务通过 **K3s HostPath 共享存储卷（`/home/gateman/cctv-buffer`）** 实现物理存储介质上的完全解耦与异步生产-消费协作：
+
+```mermaid
+flowchart TD
+    subgraph LAN["家庭局域网 (10.0.1.0/24)"]
+        IPC["TP-LINK TL-IPC44AW<br/>(10.0.1.20:554)<br/>2.5K H.265 / AAC"]
+        
+        subgraph RADXA["Radxa 单板机 (10.0.1.105 · K3s Node)"]
+            subgraph COLLECTOR_POD["cctv-collector-service (Pod :8081)"]
+                WATCHDOG["看门狗 Supervisor<br/>(Virtual Threads)"]
+                FFMPEG["FFmpeg 进程<br/>(-c copy -f segment)"]
+                WATCHDOG -->|进程树生命周期管控| FFMPEG
+            end
+
+            subgraph BUFFER["共享外接 SSD 缓冲池 (/home/gateman/cctv-buffer)"]
+                ACTIVE["cctv_*.mp4 (写入中 · mtime 毫秒刷新)"]
+                READY["cctv_*.mp4 (已闭合 · mtime 凝固 >= 60s)"]
+                WINDOW["[滑动窗口保留区: 最新 10 个切片 (~2.5h) 零延迟回看]"]
+            end
+
+            subgraph UPLOADER_POD["cctv-uploader-service (Pod :8082)"]
+                SCHED["Quarkus Cron 调度器<br/>(默认每 5 分钟扫描)"]
+                SCANNER["SegmentScanner<br/>(60s 冷却与非零字节审计)"]
+                QUEUE["TaskDao 内存队列<br/>(按时间自然排序 FIFO)"]
+                EXEC["UploadExecutorService<br/>(非重入 CAS 互斥流式上传)"]
+                
+                SCHED --> SCANNER
+                SCANNER -->|审计合格入队| QUEUE
+                QUEUE --> EXEC
+            end
+        end
+
+        subgraph STARFIVE["StarFive RISC-V 节点 (10.0.1.227)"]
+            ALIST["Alist 网关服务 (:5244/dav)<br/>[已配置 NO_PROXY 国内直连]"]
+        end
+    end
+
+    subgraph CLOUD["云端网盘 (外部存储)"]
+        QUARK["夸克网盘 / 阿里云盘<br/>/Quark/CCTV_Records/锦绣世家_客厅/YYYY-MM-DD/"]
+    end
+
+    %% 核心数据流
+    IPC -->|"1. RTSP TCP 视频流 (1.5 Mbps)"| FFMPEG
+    FFMPEG -->|"2. 实时无损追加切片"| ACTIVE
+    ACTIVE -.->|"3. 15分钟满 close 句柄"| READY
+    READY --> WINDOW
+    
+    SCANNER -.->|"4. 检查 mtime 凝固 >= 60s (绝对防半成品)"| READY
+    EXEC -->|"5. HTTP WebDAV PUT 极速直传 (6MB/s+)"| ALIST
+    ALIST -->|"6. 专线持久化入库"| QUARK
+    QUARK -->>|"7. HTTP 201 Created 确认"| EXEC
+    EXEC -.->|"8. 本地切片 > 10 ? 淘汰最旧已入库切片 : 保留"| WINDOW
+```
+
+### 🔄 协同运作关键工作机制
+
+1. **时区物理对齐（Timezone Alignment）**：
+   - 容器统一注入 `TZ: "Asia/Shanghai"`，Collector 生成的切片文件名（`cctv_YYYYMMDD_HHmmss.mp4`）与摄像头画面右上角 OSD 水印时钟分秒无缝对齐；
+   - Uploader 按文件名日期精准将切片归档至当天自然日目录（如 `/2026-09-21/`），杜绝跨天错位。
+2. **读写防碰撞安全防线（File Age Cooldown Window）**：
+   - Collector 正在录制的切片，操作系统 `mtime` 会以每秒 15 帧的频率实时更新；
+   - Uploader 的 `SegmentScanner` 强制执行 `now - lastModified >= 60s` 冷却时间与大小非零校验，**绝对不读、不传正在写入中的半成品文件**。
+3. **先进先出本地滑动窗口（FIFO Rolling Window Cache）**：
+   - 切片录制完成后第一时间直推夸克网盘完成异地容灾备份；
+   - 上传成功后探测本地 `.mp4` 文件总数：
+     - 若 `<= 10`：跳过删除，保留文件，维持本地最新 2.5 小时的极速局域网回看缓存；
+     - 若 `> 10`：按文件名时间戳自旧向新检索，**仅物理删除最旧且已确认入库的切片**，正在录制与待上传的切片受状态机绝对保护。
+4. **控制面内外网隔离（Public Readonly vs Internal Mutation）**：
+   - 公网 Kong 网关仅开放只读接口（`/api/uploader/status` 与 `/tasks`）；
+   - 写操作接口（`POST /api/uploader/trigger`）仅限 K8s 集群内网调用，彻底免除公网恶意刷接口的风险。
 
 ---
 
