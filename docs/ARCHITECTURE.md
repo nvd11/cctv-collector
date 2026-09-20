@@ -416,3 +416,29 @@ cctv-collector/                          # 根项目（Parent POM）
 1. **FFmpeg 子进程**：通过 `ProcessBuilder` 继承 Pod 容器级环境变量 `TZ=Asia/Shanghai`，glibc `strftime` 准确输出当前北京时间（如 `cctv_20260921_003822.mp4`），与视频画面右上角的水印时间分秒咬合；
 2. **Java 虚拟线程与应用日志**：Quarkus / Java 21 自动将默认时区校准为 CST，标准输出日志、状态探针与调度 Cron 表达式全面按照东八区自然时间运作；
 3. **网盘云端分层归档**：Uploader 基于切片文件名解析出的日期（`YYYY-MM-DD`）精准匹配本地现实生活中的自然日（00:00~24:00），将切片规整归入 `/Quark/CCTV_Records/锦绣世家_客厅/2026-09-21/`。
+
+---
+
+## 7. 调度体系与控制面安全隔离 (Scheduler & Control Plane Architecture)
+
+### 7.1 内置轻量 Cron 调度机制
+Uploader 服务的定时触发采用 **进程内内嵌 Quarkus Scheduler 架构**，无需依赖笨重的外部调度平台（如 Airflow 或 XXL-JOB）：
+- **触发节拍**：由环境变量 `CCTV_UPLOADER_SCAN_CRON_EXPRESSION` 驱动，默认 `0 */5 * * * ?`（逢 00, 05, 10... 整点自动触发）；
+- **非重入互斥锁 (Non-Reentrant CAS Mutex)**：
+  - 采用 `@Scheduled(concurrentExecution = ConcurrentExecution.SKIP)` 并在调度入口通过 `AtomicBoolean uploadInProgress` 双重设防；
+  - 若上一批切片因文件较大直传耗时跨越了 5 分钟窗口，新的定时触发自动跳过（Skip），杜绝多线程竞争写 Alist WebDAV；
+- **全自动生命周期**：冷启动时通过 Quarkus `@Observes StartupEvent` 激活状态机，优雅停机时触发 `ShutdownEvent` 安全排空。
+
+### 7.2 控制面网络隔离与防刷设计 (Public Readonly vs Internal Mutation)
+为了防范公网被恶意触发打爆宽带或造成 WebDAV 锁死，对 Uploader 暴露的接口实行**物理级内外网分流策略**：
+```text
+【公网入口 (通过 Kong Gateway)】
+    ├── GET  /api/uploader/status  ---> 放行 (只读健康监控与容量快照)
+    ├── GET  /api/uploader/tasks   ---> 放行 (只读最近切片上云历史)
+    └── POST /api/uploader/trigger ---> 🚨 404 / 403 拦截 (不开放公网路由)
+
+【K8s 集群内网 (ClusterIP / CoreDNS)】
+    └── POST http://cctv-uploader:8082/api/uploader/trigger ---> 放行 (供内部运维/测试即时唤醒)
+```
+- **公网安全态势**：公网网关通过 HTTPRoute `public-readonly` 精细化白名单代理，外网黑客或扫描器无法触碰 `trigger` 接口；
+- **内网随心掌控**：若需应急排队直传，内网一键 POST 即可秒级派发，兼顾了安全性与运维弹性。

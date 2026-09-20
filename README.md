@@ -58,6 +58,17 @@
 - `CCTV_UPLOADER_LOCATION_NAME`: 监控机位名称（默认 `锦绣世家_客厅`）
 - `CCTV_UPLOADER_MIN_RETAINED_FILES`: 本地滑动窗口最少留存切片数（默认 `10`，覆盖约 2.5 小时）
 - `CCTV_UPLOADER_CLEANUP_POLICY`: 清理策略（默认 `DELETE`）
+- `CCTV_UPLOADER_SCAN_CRON_EXPRESSION`: 定时轮询表达式（默认 `0 */5 * * * ?`，即每 5 分钟自动扫描并批处理上传）
+
+### ⏰ 定时调度与自动化触发机制 (Scheduler Architecture)
+Uploader 服务采用 **Quarkus 进程内原生 Cron 调度器（`io.quarkus.scheduler.Scheduled`）**，结合非重入互斥锁与双模触发设计：
+1. **自动定时调度（In-Process Cron）**：
+   - 由 `UploaderScheduler` 基于 `cctv.uploader.scan-cron-expression` 周期性唤醒（默认每 5 分钟，逢整点 00, 05, 10, 15... 分钟触发）；
+   - 配置 `@Scheduled(concurrentExecution = ConcurrentExecution.SKIP)` 并配合 CAS 原子状态锁（`uploadInProgress`），若上一批大文件正在直传，自动跳过本次并发，避免 WebDAV 锁冲突；
+2. **安全边界保护（Restricted Public Ingress）**：
+   - 触发接口（`POST /api/uploader/trigger`）**仅向集群内网开放**，公网网关（Kong）实施严格白名单路由，仅放行只读监控接口（`GET /api/uploader/status` 与 `/tasks`），彻底封堵公网被恶意触发攻击的风险；
+3. **按需手动触发（On-Demand API）**：
+   - 支持 K8s 集群内网其他组件、运维脚本或轻量 Pod 直接调用 `POST http://cctv-uploader:8082/api/uploader/trigger` 立即执行一次上传。
 
 ---
 

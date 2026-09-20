@@ -460,9 +460,10 @@ sequenceDiagram
 - **包路径**：`com.gateman.cctv.uploader.service`
 - **作用域**：`@ApplicationScoped`
 - **职责**：
-  - 基于 Quarkus `@Scheduled(cron = "{cctv.uploader.scan-cron-expression}")` 每 5 分钟定时唤醒；
+  - 基于 Quarkus `@Scheduled(cron = "{cctv.uploader.scan-cron-expression}")` 定时唤醒（默认每 5 分钟，逢整点 00, 05, 10... 触发）；
+  - 配置 `concurrentExecution = ConcurrentExecution.SKIP` 并持有 `AtomicBoolean uploadInProgress` 互斥锁，保障前序上传进行中时新调度主动让位；
   - 串联 `SegmentScanner` 扫描与 `UploadExecutorService` 执行；
-  - 支持 REST API 手动提前唤醒执行。
+  - 提供 `triggerManualUpload()` 供内网控制面按需提前唤醒执行。
 
 ---
 
