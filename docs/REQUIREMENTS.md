@@ -40,6 +40,7 @@
 - **RTSP 视频流拉取**：通过 `-rtsp_transport tcp` 建立稳定的 RTSP 会话。
 - **时间分段策略**：默认切片时长可配置（默认 900 秒 / 15 分钟），文件名格式标准：`cctv_YYYYMMDD_HHmmss.mp4`。
 - **文件状态感知**：未写入完成的文件追加 `.tmp` 后缀，写入完毕后原子重命名为 `.mp4`，便于下游 Batch Uploader 无竞争读取。
+- **时区一致性与 OSD 水印对齐 (Timezone Synchronization)**：切片文件名中的年月日与时分秒必须与摄像机画面右上角 OSD 水印时间（北京时间 CST, UTC+8）完全一致。容器环境强制注入 `TZ=Asia/Shanghai`，使 FFmpeg 底层 `localtime_r` 和 `strftime` 解析中国标准时间，同时确保云端网盘按本地自然日（00:00~24:00）精准归档，根除 UTC 导致的 8 小时倒流与跨天错位。
 
 ### 3.2 异常与进程看门狗 (Watchdog)
 - **断流恢复**：持续监听底层 FFmpeg 进程状态。若 RTSP 连接中断或摄像机重启，5 秒内自动启动指数退避重连机制。

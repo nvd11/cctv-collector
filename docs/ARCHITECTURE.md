@@ -402,3 +402,17 @@ cctv-collector/                          # 根项目（Parent POM）
 ```
 
 ---
+
+## 6. 时区一致性与 OSD 物理时钟对齐设计 (Timezone & Clock Alignment)
+
+家庭安防监控体系中，切片文件名所携带的物理时间戳必须与视频画面右上角摄像机固件生成的 OSD 水印时钟保持分秒级严格一致。
+
+### 6.1 8 小时时区偏差与跨天错位根因
+- **现象**：在北京时间午夜 00:38 录制的视频切片，生成文件名却为 `cctv_20260920_163822.mp4`。文件名时间比视频画面时间落后整整 8 个小时，且跨天停留在昨天（20日），导致下游网盘按日归档的目录跨天错乱；
+- **根因**：FFmpeg 在切片参数 `-strftime 1` 激活时，调用 Linux C 标准库（glibc）的 `localtime_r(&ti, &tm)` 与 `strftime()`。容器内部若未配置 `TZ` 环境变量，操作系统内核默认回退至世界协调时 `/etc/localtime -> Etc/UTC`（UTC+0），而 TP-LINK 摄像机固件印在视频画面上的时钟为中国标准时间（CST，UTC+8）。
+
+### 6.2 零编译改动方案：POSIX 环境变量注入
+由于 Java 业务逻辑与底层 FFmpeg 原生二进制文件本身严格遵循 POSIX 时区规范，无需重新构建或修改代码，统一由 GitOps 仓库（`my-argocd-manifests`）在 ConfigMap 中注入 `TZ: "Asia/Shanghai"`：
+1. **FFmpeg 子进程**：通过 `ProcessBuilder` 继承 Pod 容器级环境变量 `TZ=Asia/Shanghai`，glibc `strftime` 准确输出当前北京时间（如 `cctv_20260921_003822.mp4`），与视频画面右上角的水印时间分秒咬合；
+2. **Java 虚拟线程与应用日志**：Quarkus / Java 21 自动将默认时区校准为 CST，标准输出日志、状态探针与调度 Cron 表达式全面按照东八区自然时间运作；
+3. **网盘云端分层归档**：Uploader 基于切片文件名解析出的日期（`YYYY-MM-DD`）精准匹配本地现实生活中的自然日（00:00~24:00），将切片规整归入 `/Quark/CCTV_Records/锦绣世家_客厅/2026-09-21/`。

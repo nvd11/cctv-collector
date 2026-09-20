@@ -479,7 +479,8 @@ sequenceDiagram
 - **注解**：`@ConfigMapping(prefix = "cctv")`
 - **设计要点**：
   - 映射 `application.properties` 及 K3s ConfigMap 环境变量；
-  - 属性名称采用烤肉串式（kebab-case），Quarkus 会自动将其与环境变量的大写下划线格式（如 `CCTV_RTSP_URL`）完成高效映射。
+  - 属性名称采用烤肉串式（kebab-case），Quarkus 会自动将其与环境变量的大写下划线格式（如 `CCTV_RTSP_URL`）完成高效映射；
+  - **容器时区规范**：由 K8s ConfigMap 统一注入标准 POSIX 环境变量 `TZ: "Asia/Shanghai"`，FFmpeg 子进程与 JVM 均运行在东八区，保障切片文件名时间戳与视频画面右上角 OSD 水印分秒一致。
 - **方法签名**：
   - `String rtspUrl()`: RTSP 流连接串。
   - `String bufferDir()`: 切片输出缓冲根目录。
@@ -507,7 +508,7 @@ sequenceDiagram
 - **特性**：无状态纯函数工具类
 - **设计要点**：
   - 负责严格拼装符合安防标准的 FFmpeg 参数矩阵，强制走 TCP 避免 UDP 丢包导致的马赛克与绿屏；
-  - 使用 `-strftime 1` 配合 `cctv_%Y%m%d_%H%M%S.mp4` 保证原子切片文件名天然具备时间可排序性。
+  - 使用 `-strftime 1` 配合 `cctv_%Y%m%d_%H%M%S.mp4` 动态命名，底层依赖 glibc `localtime_r` 获取当前环境时区（`TZ=Asia/Shanghai`），保证切片文件名与视频画面 OSD 水印一致且天然具备时间可排序性。
 - **关键方法**：
   - `public static List<String> buildArgs(CollectorConfig config)`: 返回标准 `List<String>` 供 `ProcessBuilder` 消费。
   - `public static String resolveOutputPathPattern(String bufferDir)`: 解析生成带时间戳模板的绝对文件路径。

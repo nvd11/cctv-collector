@@ -42,6 +42,9 @@
 ### 配置说明
 支持通过系统环境变量或 ConfigMap 覆盖配置参数：
 
+#### 通用环境配置
+- `TZ`: 容器运行与切片命名时区（强制推荐 `Asia/Shanghai`，使切片文件名与视频画面 OSD 水印分秒一致，且云端网盘按中国自然日归档）
+
 #### 采集端 (`cctv-collector`)
 - `CCTV_RTSP_URL`: 摄像机 RTSP 地址（默认 `rtsp://admin:your_password@10.0.1.20:554/stream1`）
 - `CCTV_BUFFER_DIR`: 视频切片暂存目录（默认 `/tmp/cctv_buffer` 或 Radxa 外接固态）
