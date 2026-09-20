@@ -206,11 +206,11 @@ classDiagram
     CollectorServiceImpl <-- CollectorLivenessCheck : 探针校验
     CollectorServiceImpl <-- CollectorReadinessCheck : 探针校验
 
-    FFmpegProcessSupervisor *-- FFmpegProcessExecutor : 专属持有独立执行器实例 (1:1 专属组合)
+    FFmpegProcessSupervisor *-- FFmpegProcessExecutor : 专属持有独立执行器实例
     FFmpegProcessExecutor *-- Process : 完全封装与隐藏底层 OS Process 句柄
     FFmpegProcessSupervisor --> VideoStreamProfile : 维护视频流画像
     FFmpegProcessSupervisor --> SegmentLifecycleWatcher : 派发切片生命周期事件
-    SegmentLifecycleWatcher --> SegmentDao : 注册/维护切片状态
+    SegmentLifecycleWatcher --> SegmentDao : 注册与维护切片状态
     SegmentDao *-- VideoSegment : 管理切片集合
     VideoSegment *-- SegmentStatus : 状态枚举
 
