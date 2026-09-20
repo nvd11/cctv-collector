@@ -29,6 +29,7 @@ public class UploaderScheduler {
     private final TaskDao taskDao;
     private final UploadHealthTracker healthTracker;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean uploadInProgress = new AtomicBoolean(false);
 
     @Inject
     public UploaderScheduler(
@@ -60,9 +61,17 @@ public class UploaderScheduler {
     /**
      * Cron-scheduled batch scan and upload job.
      */
-    @Scheduled(cron = "{cctv.uploader.scan-cron-expression}")
+    @Scheduled(
+            cron = "{cctv.uploader.scan-cron-expression}",
+            concurrentExecution = Scheduled.ConcurrentExecution.SKIP
+    )
     public void scheduledScanAndUpload() {
         if (!running.get()) {
+            return;
+        }
+
+        if (!uploadInProgress.compareAndSet(false, true)) {
+            LOG.infof("Previous batch upload is still running. Skipping scheduled trigger to prevent WebDAV lock contention.");
             return;
         }
 
@@ -81,6 +90,8 @@ public class UploaderScheduler {
             }
         } catch (Exception e) {
             LOG.errorf(e, "Scheduled upload job encountered an error: %s", e.getMessage());
+        } finally {
+            uploadInProgress.set(false);
         }
     }
 
@@ -91,9 +102,17 @@ public class UploaderScheduler {
      */
     public synchronized int triggerManualUpload() {
         LOG.info("Manual upload triggered via API.");
-        scanner.scanEligibleSegments();
-        List<UploadTask> pending = taskDao.findPendingTasks();
-        return executor.executeBatch(pending);
+        if (!uploadInProgress.compareAndSet(false, true)) {
+            LOG.warn("Upload batch already running. Manual trigger rejected to prevent lock collision.");
+            return 0;
+        }
+        try {
+            scanner.scanEligibleSegments();
+            List<UploadTask> pending = taskDao.findPendingTasks();
+            return executor.executeBatch(pending);
+        } finally {
+            uploadInProgress.set(false);
+        }
     }
 
     public boolean isRunning() {
