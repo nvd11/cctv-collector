@@ -14,9 +14,11 @@
 2. **幂等性与断点续传设计（Idempotent & Resilient Upload）**：
    - 远端路径按日期分层规划：`/CCTV_Records/YYYY-MM-DD/cctv_YYYYMMDD_HHMMSS.mp4`；
    - 上传前先进行远端元数据嗅探（`MKCOL` / `PROPFIND` / `HEAD`），若远端已存在同名且大小一致的文件，直接标记为已完成，防止重复消耗家庭上行宽带。
-3. **物理存储清理防爆仓（Safe Local Eviction）**：
-   - 本地切片的删除与归档必须在**远端写入确认（HTTP 201 Created / 204 No Content / 200 OK）**之后执行；
-   - 磁盘清理策略支持双模可配：`DELETE`（立即删除释放空间）或 `ARCHIVE`（移动到 `.uploaded/` 归档保留 N 天）。
+3. **本地滑动窗口留存与防爆仓（Rolling Window Local Cache & Safe Eviction）**：
+   - 为保障近场高频回看免外网缓冲的极致体验，本地始终维持最新的 `minRetainedFiles` 个切片（默认 10 个，约 2.5 小时）；
+   - 当本地文件总数超过保留阈值时，仅在远端确认落盘后，从最旧且已确认入库的切片开始剔除多余文件；
+   - 未上传或半成品切片受到严格状态机保护，严禁物理删除；
+   - 磁盘清理策略支持双模可配：`DELETE`（按滑动窗口释放空间）或 `NONE`（不执行删除）。
 4. **自适应速率控制与网络退避（Rate Limiting & Backoff）**：
    - 严格控制并发上传线程数（默认单线程或最多双线程并发），防止吃满家庭宽带上行导致监控丢包或网盘触发 429 限流；
    - 遭遇局域网不可达（StarFive 掉线）或网盘限速时，执行指数退避重试（5s ➔ 10s ➔ 20s... 上限 300s）。
@@ -42,6 +44,7 @@ classDiagram
         +minFileAgeSeconds() long
         +maxConcurrentUploads() int
         +cleanupPolicy() String
+        +minRetainedFiles() int
         +scanCronExpression() String
         +reconnectDelaySeconds() int
         +maxReconnectDelaySeconds() int
@@ -138,9 +141,9 @@ classDiagram
         -TaskDao taskDao
         -UploadHealthTracker healthTracker
         -Logger log
-        +executeBatch(List~UploadTask~ tasks) void
+        +executeBatch(List~UploadTask~ tasks) int
         +executeSingle(UploadTask task) boolean
-        -cleanLocalFile(Path path) void
+        ~cleanLocalFiles() void
     }
 
     class UploaderScheduler {
@@ -246,8 +249,8 @@ sequenceDiagram
             Exec->>Tracker: recordUploadSuccess(bytes)
             Exec->>Dao: markSuccess(taskId)
             
-            opt 本地清理策略 (DELETE 释放 SSD 空间)
-                Exec->>FS: Files.deleteIfExists(localPath)
+            opt 本地滑动窗口淘汰 (维持最新 minRetainedFiles=10 个切片)
+                Exec->>FS: 检查本地文件数 > minRetainedFiles ? 淘汰最旧已上传切片 : 保留本地文件
             end
         end
     end
@@ -365,6 +368,7 @@ sequenceDiagram
     - `locationName()` ➔ 摄像头机位专属子目录（默认 `锦绣世家_客厅`，对应环境变量 `CCTV_UPLOADER_LOCATION_NAME`）；
     - `minFileAgeSeconds()` ➔ 物理文件防并发安全窗口（默认 `60` 秒）；
     - `cleanupPolicy()` ➔ 本地清理动作，可选 `DELETE` 或 `NONE`（默认 `DELETE`）；
+    - `minRetainedFiles()` ➔ 本地 SSD 滑动窗口最少保留切片数（默认 `10`，对应环境变量 `CCTV_UPLOADER_MIN_RETAINED_FILES`）；
     - `maxConcurrentUploads()` ➔ 上传并发度（默认 `1`，平滑家庭网络）；
     - `scanCronExpression()` ➔ 定时轮询表达式（默认每 5 分钟 `0 */5 * * * ?`）。
 
@@ -441,9 +445,13 @@ sequenceDiagram
 - **作用域**：`@ApplicationScoped`
 - **职责**：
   - 限制并发控制（受 `maxConcurrentUploads` 节流保护）；
-  - 执行“嗅探 ➔ 创建目录 ➔ 上传 ➔ 验证 ➔ 本地清理”的标准批处理闭环；
-  - 上传成功后调用 `Files.deleteIfExists(localPath)` 清理 Radxa 本地 SSD 空间；
-  - 上传失败后调用 `healthTracker.recordUploadFailure()` 并根据重试次数计算退避休眠。
+  - 执行“嗅探 ➔ 创建目录 ➔ 上传 ➔ 验证 ➔ 本地滑动窗口清理”的标准批处理闭环；
+  - 维持本地滑动窗口缓存（`cleanLocalFiles()`）：
+    - 统计本地 buffer 目录下的 `.mp4` 文件总数；
+    - 当且仅当总数超过 `minRetainedFiles`（默认 10）时，启动 FIFO 淘汰策略；
+    - 仅对已标记为 `SUCCESS` 或 `SKIPPED`（且经远端网盘元数据校验存在）的最旧切片执行物理删除；
+    - 尚未上传完毕或正在录制的文件严禁误删，确保本地始终稳定保留最新 10 个切片；
+  - 上传失败后调用 `healthTracker.recordUploadFailure()` 并尝试清理远端不完整会话。
 
 ---
 
