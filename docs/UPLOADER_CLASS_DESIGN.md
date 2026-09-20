@@ -38,6 +38,7 @@ classDiagram
         +alistUsername() String
         +alistPassword() String
         +remoteBaseDir() String
+        +locationName() String
         +minFileAgeSeconds() long
         +maxConcurrentUploads() int
         +cleanupPolicy() String
@@ -238,7 +239,7 @@ sequenceDiagram
             Alist-->>Exec: 200 OK (文件已就绪)
             Exec->>Dao: markSuccess(taskId) [SKIPPED]
         else 远端不存在，执行物理数据流式推送
-            Exec->>Alist: MKCOL /CCTV_Records/YYYY-MM-DD (保证父目录存在)
+            Exec->>Alist: MKCOL /Quark/CCTV_Records/锦绣世家_客厅/YYYY-MM-DD (保证机位与日期目录存在)
             Exec->>Alist: PUT 流式推送文件内容 (带 Basic Auth)
             Alist->>Cloud: 异步持久化至网盘
             Alist-->>Exec: 201 Created / 204 No Content
@@ -360,7 +361,8 @@ sequenceDiagram
     - `bufferDir()` ➔ `CCTV_UPLOADER_BUFFER_DIR`（默认 `/mnt/buffer/cctv`）；
     - `alistEndpoint()` ➔ `CCTV_UPLOADER_ALIST_ENDPOINT`（默认 `http://10.0.1.227:5244/dav`）；
     - `alistUsername()` / `alistPassword()` ➔ `CCTV_UPLOADER_ALIST_USERNAME` / `PASSWORD`；
-    - `remoteBaseDir()` ➔ 远端根路径（默认 `/CCTV_Records`）；
+    - `remoteBaseDir()` ➔ 远端网盘基础路径（默认 `/Quark/CCTV_Records`）；
+    - `locationName()` ➔ 摄像头机位专属子目录（默认 `锦绣世家_客厅`，对应环境变量 `CCTV_UPLOADER_LOCATION_NAME`）；
     - `minFileAgeSeconds()` ➔ 物理文件防并发安全窗口（默认 `60` 秒）；
     - `cleanupPolicy()` ➔ 本地清理动作，可选 `DELETE` 或 `NONE`（默认 `DELETE`）；
     - `maxConcurrentUploads()` ➔ 上传并发度（默认 `1`，平滑家庭网络）；
@@ -416,8 +418,8 @@ sequenceDiagram
 - **职责**：
   - 扫描 `/mnt/buffer/cctv` 目录下的所有 `*.mp4` 文件；
   - 检查文件的 `lastModifiedTime`：当且仅当 `now - lastModifiedTime >= 60s` 时，判定文件已彻底摆脱 FFmpeg 写入锁定；
-  - 按照文件名解析录制日期，动态规划远端路径：
-    `cctv_20260920_023000.mp4` $\longrightarrow$ `/CCTV_Records/2026-09-20/cctv_20260920_023000.mp4`；
+  - 按照文件名解析录制日期与配置的机位名，动态规划夸克网盘远端路径：
+    `cctv_20260920_023000.mp4` $\longrightarrow$ `/Quark/CCTV_Records/锦绣世家_客厅/2026-09-20/cctv_20260920_023000.mp4`；
   - 将合格文件封装为 `UploadTask` 存入 `TaskDao`。
 
 ---
@@ -428,7 +430,7 @@ sequenceDiagram
 - **职责**：
   - 封装与 StarFive Alist 的 HTTP / WebDAV 通信；
   - 自动拼装 `Authorization: Basic <Base64>` 请求头；
-  - `boolean ensureRemoteDirExists(String remoteDir)`：自动递归发送 WebDAV `MKCOL` 命令确保远端日期目录（如 `/CCTV_Records/2026-09-20/`）存在；
+  - `boolean ensureRemoteDirExists(String remoteDir)`：自动递归发送 WebDAV `MKCOL` 命令确保远端机位与日期目录（如 `/Quark/CCTV_Records/锦绣世家_客厅/2026-09-20/`）存在；
   - `boolean existsRemoteFile(String remotePath, long expectedSize)`：发送 `PROPFIND` 或 `HEAD` 校验远端文件是否存在且大小吻合；
   - `boolean uploadStream(String remotePath, Path localFile)`：采用高效的 `InputStream` 块式缓冲传输，发送 WebDAV `PUT` 请求，防止大文件 OOM。
 
@@ -505,7 +507,7 @@ sequenceDiagram
    登记入 TaskDao ➔ 状态: PENDING
 
 4. 传输中阶段 (由 cctv-uploader.UploadExecutorService 执行):
-   PUT http://10.0.1.227:5244/dav/CCTV_Records/2026-09-20/cctv_20260920_120000.mp4
+   PUT http://10.0.1.227:5244/dav/Quark/CCTV_Records/锦绣世家_客厅/2026-09-20/cctv_20260920_120000.mp4
    状态: UPLOADING
 
 5. 确认与清理阶段 (收到 HTTP 201/204):
