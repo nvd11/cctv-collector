@@ -28,14 +28,20 @@ public interface UploaderConfig {
 
     /**
      * Alist WebDAV authentication username.
+     * <p>
+     * No secret, but still overridable via {@code CCTV_UPLOADER_ALIST_USERNAME}.
      */
     @WithDefault("gateman")
     String alistUsername();
 
     /**
      * Alist WebDAV authentication password.
+     * <p>
+     * <b>Secret: intentionally has NO default value.</b> It must be injected at runtime via the
+     * {@code CCTV_UPLOADER_ALIST_PASSWORD} environment variable (Kubernetes Secret / local {@code .env}).
+     * Quarkus aborts startup with a {@code ConfigValidationException} when it is absent, so a missing
+     * secret can never silently fall back to a hardcoded credential.
      */
-    @WithDefault("test-only-dummy-password")
     String alistPassword();
 
     /**

@@ -3,6 +3,8 @@ target/
 *.jar
 *.log
 .env
+.env.*
+!.env-template
 .idea/
 *.iml
 .vscode/

@@ -29,7 +29,7 @@ class VideoStreamProfileTest {
     @Test
     @DisplayName("Should properly mask RTSP URLs and handle URLs without credentials")
     void shouldSanitizeRtspUrlsCorrectly() {
-        assertThat(VideoStreamProfile.sanitizeStreamUrl("rtsp://admin:secretPassword123@10.0.1.20:554/stream1"))
+        assertThat(VideoStreamProfile.sanitizeStreamUrl("rtsp://admin:***REMOVED***@10.0.1.20:554/stream1"))
                 .isEqualTo("rtsp://admin:****@10.0.1.20:554/stream1");
 
         assertThat(VideoStreamProfile.sanitizeStreamUrl("rtsp://10.0.1.20:554/stream1"))

@@ -122,7 +122,7 @@ flowchart TD
 - `TZ`: 容器运行与切片命名时区（强制推荐 `Asia/Shanghai`，使切片文件名与视频画面 OSD 水印分秒一致，且云端网盘按中国自然日归档）
 
 #### 采集端 (`cctv-collector`)
-- `CCTV_RTSP_URL`: 摄像机 RTSP 地址（默认 `rtsp://admin:your_password@10.0.1.20:554/stream1`）
+- `CCTV_RTSP_URL`: 摄像机 RTSP 地址（**含设备密码，必须由环境变量注入**，代码内不内置任何真实凭据；格式 `rtsp://<user>:<password>@<camera_ip>:554/stream1`）
 - `CCTV_BUFFER_DIR`: 视频切片暂存目录（默认 `/tmp/cctv_buffer` 或 Radxa 外接固态）
 - `CCTV_SEGMENT_SECONDS`: 切片分段时长（默认 `900` 秒 / 15 分钟）
 - `CCTV_MIN_FREE_DISK_GB`: 磁盘安全熔断阈值（默认 `5` GB）
@@ -130,6 +130,8 @@ flowchart TD
 #### 上传端 (`cctv-uploader`)
 - `CCTV_UPLOADER_BUFFER_DIR`: 共享切片缓冲目录（默认 `/mnt/buffer/cctv`）
 - `CCTV_UPLOADER_ALIST_ENDPOINT`: Alist WebDAV 地址（默认 `http://10.0.1.227:5244/dav`）
+- `CCTV_UPLOADER_ALIST_USERNAME`: Alist WebDAV 用户名（默认 `gateman`）
+- `CCTV_UPLOADER_ALIST_PASSWORD`: **【必填 · 机密】Alist WebDAV 密码**，代码中**无任何默认值**，缺失时服务启动直接失败（fail-fast），生产环境请通过 K8s `Secret` 注入
 - `CCTV_UPLOADER_REMOTE_BASE_DIR`: 远端网盘基础根目录（默认 `/Quark/CCTV_Records`）
 - `CCTV_UPLOADER_LOCATION_NAME`: 监控机位名称（默认 `锦绣世家_客厅`）
 - `CCTV_UPLOADER_MIN_RETAINED_FILES`: 本地滑动窗口最少留存切片数（默认 `10`，覆盖约 2.5 小时）

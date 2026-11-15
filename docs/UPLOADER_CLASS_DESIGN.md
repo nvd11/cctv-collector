@@ -363,7 +363,7 @@ sequenceDiagram
   - 属性映射规则（UPPER_UNDERSCORE 转换）：
     - `bufferDir()` ➔ `CCTV_UPLOADER_BUFFER_DIR`（默认 `/mnt/buffer/cctv`）；
     - `alistEndpoint()` ➔ `CCTV_UPLOADER_ALIST_ENDPOINT`（默认 `http://10.0.1.227:5244/dav`）；
-    - `alistUsername()` / `alistPassword()` ➔ `CCTV_UPLOADER_ALIST_USERNAME` / `PASSWORD`；
+    - `alistUsername()` / `alistPassword()` ➔ `CCTV_UPLOADER_ALIST_USERNAME` / `CCTV_UPLOADER_ALIST_PASSWORD`（**密码为机密项，代码内不设默认值，缺失即启动失败**）；
     - `remoteBaseDir()` ➔ 远端网盘基础路径（默认 `/Quark/CCTV_Records`）；
     - `locationName()` ➔ 摄像头机位专属子目录（默认 `锦绣世家_客厅`，对应环境变量 `CCTV_UPLOADER_LOCATION_NAME`）；
     - `minFileAgeSeconds()` ➔ 物理文件防并发安全窗口（默认 `60` 秒）；

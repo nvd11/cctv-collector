@@ -7,7 +7,7 @@
 在这个工程实践中，配置管理面临两个针锋相对的核心诉求：
 
 1. **本地开发与离线调试的高灵活性**：
-   - 开发者在本地机器上运行单元测试或调试 `ffmpeg` 进程时，必须接入真实的摄像机 RTSP 流（包含敏感的设备账号密码 `admin:secretPassword123`）；
+   - 开发者在本地机器上运行单元测试或调试 `ffmpeg` 进程时，必须接入真实的摄像机 RTSP 流（其中含设备账号密码，**一律通过 `CCTV_RTSP_URL` 环境变量注入，绝不写进代码、配置类或文档示例**）；
    - 传统 Java 偏向于在 `application.properties` 里配置参数，但若不慎提交真实凭证到 GitHub 公开仓库，将造成严重的网络安全泄漏；
    - 开发者希望本地配置具备类似脚本语言（如 Python `python-dotenv`）的体验：随时在一个独立文件中修改变量，且该文件天然被版本控制忽略，甚至能在 Linux 终端直接执行 `source .env` 供命令行工具调用。
 
@@ -47,7 +47,8 @@
 该架构确保了：
 - **容器环境无需挂载文件**：K3s 注入的环境变量具有最高优先级（300），无缝覆盖下层的一切默认值；
 - **本地开发无需改动代码**：只要本地存在 `.env`，其优先级高于代码内的默认配置；
-- **零配置开箱即用**：即使不提供任何外部环境变量和 `.env` 文件，依靠 `@WithDefault` 和 `application.properties`，全套基础测试依然能闭环运行。
+- **零配置开箱即用（仅限非机密项）**：即使不提供任何外部环境变量和 `.env` 文件，依靠 `@WithDefault` 和 `application.properties`，非机密配置与全套基础测试依然能闭环运行；
+- **机密项强制注入（Fail-Fast）**：凡是密码类配置（如 `CCTV_UPLOADER_ALIST_PASSWORD`），代码中**不设任何默认值**，缺失时 Quarkus 启动即抛出 `ConfigValidationException`，从根本上杜绝"回落到硬编码口令"的可能。
 
 ---
 
@@ -65,19 +66,36 @@ spec:
   source:
     helm:
       values: |
+        # 非机密配置走 ConfigMap，机密配置走 Secret，物理隔离
         envFrom:
           - configMapRef:
               name: cctv-collector-config
+          - secretRef:
+              name: cctv-secrets
 
         configMap:
           enabled: true
           name: cctv-collector-config
           data:
-            CCTV_RTSP_URL: "rtsp://admin:secretPassword123@10.0.1.20:554/stream1"
             CCTV_BUFFER_DIR: "/mnt/buffer/cctv"
             CCTV_SEGMENT_SECONDS: "900"
             CCTV_MIN_FREE_DISK_GB: "5"
 ```
+
+机密值（摄像机口令、网盘口令）由集群外注入，**永远不进入 Git 仓库**：
+
+```yaml
+# cctv-secrets.yaml —— 仅作结构示意，实际由 Sealed Secrets / External Secrets / kubectl 直接创建
+apiVersion: v1
+kind: Secret
+metadata:
+  name: cctv-secrets
+type: Opaque
+stringData:
+  CCTV_RTSP_URL: "rtsp://admin:<your_camera_password>@10.0.1.20:554/stream1"
+  CCTV_UPLOADER_ALIST_PASSWORD: "<your_alist_password>"
+```
+
 
 ### 3.2 环境变量的 POSIX 命名约束
 
@@ -334,9 +352,9 @@ void testBuildFFmpegArgsFromDynamicEnv() {
 ```text
 [INFO] Running com.gateman.cctv.collector.config.EnvVariableTest
 2026-09-19 23:49:15 INFO Dynamic USER from OS: gateman
-2026-09-19 23:49:15 INFO Retrieved CCTV_RTSP_URL dynamically: rtsp://admin:secretPassword123@10.0.1.20:554/stream1
+2026-09-19 23:49:15 INFO Retrieved CCTV_RTSP_URL dynamically: rtsp://admin:****@10.0.1.20:554/stream1
 2026-09-19 23:49:15 INFO Final assembled FFmpeg command from dynamic env:
-2026-09-19 23:49:15 INFO ffmpeg -hide_banner -loglevel info -rtsp_transport tcp -i rtsp://admin:secretPassword123@10.0.1.20:554/stream1 -c copy -f segment -segment_time 900 -segment_format mp4 -reset_timestamps 1 -strftime 1 /mnt/buffer/cctv/cctv_%Y%m%d_%H%M%S.mp4
+2026-09-19 23:49:15 INFO ffmpeg -hide_banner -loglevel info -rtsp_transport tcp -i rtsp://admin:****@10.0.1.20:554/stream1 -c copy -f segment -segment_time 900 -segment_format mp4 -reset_timestamps 1 -strftime 1 /mnt/buffer/cctv/cctv_%Y%m%d_%H%M%S.mp4
 [INFO] Tests run: 3, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 0.149 s
 ```
 

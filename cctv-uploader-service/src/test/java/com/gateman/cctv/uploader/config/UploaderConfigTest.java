@@ -20,7 +20,8 @@ class UploaderConfigTest {
         assertThat(config.bufferDir()).isEqualTo("/mnt/buffer/cctv");
         assertThat(config.alistEndpoint()).isEqualTo("http://10.0.1.227:5244/dav");
         assertThat(config.alistUsername()).isEqualTo("gateman");
-        assertThat(config.alistPassword()).isEqualTo("test-only-dummy-password");
+        // Password is intentionally injected via CCTV_UPLOADER_ALIST_PASSWORD (see src/test/resources/application.properties).
+        assertThat(config.alistPassword()).isEqualTo("***REMOVED***");
         assertThat(config.remoteBaseDir()).isEqualTo("/Quark/CCTV_Records");
         assertThat(config.locationName()).isEqualTo("锦绣世家_客厅");
         assertThat(config.minFileAgeSeconds()).isEqualTo(60L);

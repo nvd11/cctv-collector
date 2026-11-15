@@ -26,7 +26,7 @@ public record TestUploaderConfig(
                 "/mnt/buffer/cctv",
                 "http://10.0.1.227:5244/dav",
                 "gateman",
-                "test-only-dummy-password",
+                "***REMOVED***",
                 "/Quark/CCTV_Records",
                 "锦绣世家_客厅",
                 60L,
