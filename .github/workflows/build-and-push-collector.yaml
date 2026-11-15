@@ -4,8 +4,12 @@ on:
   push:
     branches:
       - main
+    # 🎯 只认「会进镜像」的产物：src/main、pom、Dockerfile。
+    # 测试代码（src/test/**）的改动不再触发镜像构建，交由 ci.yaml 跑测试即可。
     paths:
-      - "cctv-collector-service/**"
+      - "cctv-collector-service/src/main/**"
+      - "cctv-collector-service/pom.xml"
+      - "cctv-collector-service/Dockerfile"
       - "pom.xml"
       - ".mvn/**"
       - "mvnw"

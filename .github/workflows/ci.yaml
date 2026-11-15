@@ -1,11 +1,24 @@
-name: CCTV Collector CI
+name: CCTV Services CI
 
+# 🎯 职责边界：本工作流只负责「编译 + 跑测试」，绝不产出/推送任何镜像。
+# 无论是 PR 还是直接 push 到 main，只要代码或测试有变动，都必须先通过本关。
 on:
   pull_request:
     branches:
       - main
     paths:
       - "cctv-collector-service/**"
+      - "cctv-uploader-service/**"
+      - "pom.xml"
+      - ".mvn/**"
+      - "mvnw"
+      - ".github/workflows/ci.yaml"
+  push:
+    branches:
+      - main
+    paths:
+      - "cctv-collector-service/**"
+      - "cctv-uploader-service/**"
       - "pom.xml"
       - ".mvn/**"
       - "mvnw"
@@ -14,7 +27,7 @@ on:
 
 jobs:
   test:
-    name: Compile, Test & Package
+    name: Compile & Test (collector + uploader)
     runs-on: ubuntu-latest
 
     steps:
@@ -28,10 +41,10 @@ jobs:
           java-version: "21"
           cache: "maven"
 
-      - name: Run Unit & Integration Tests
+      - name: Run Unit & Integration Tests (both services)
         run: |
-          ./mvnw clean test -pl cctv-collector-service
+          ./mvnw clean test -pl cctv-collector-service,cctv-uploader-service
 
-      - name: Package Service Artifacts
+      - name: Package Service Artifacts (no image publish)
         run: |
-          ./mvnw package -DskipTests -pl cctv-collector-service
+          ./mvnw package -DskipTests -pl cctv-collector-service,cctv-uploader-service
