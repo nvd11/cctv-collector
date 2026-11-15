@@ -44,25 +44,32 @@ class EnvVariableTest {
 
     @Test
     @DisplayName("2. DotEnv.load() dynamically parses .env file into a Map<String, String>")
-    void testDotEnvDynamicLoading() {
+    void testDotEnvDynamicLoading() throws Exception {
         // Parse .env dynamically (identical to Python's dotenv_values)
         Map<String, String> env = DotEnv.load();
 
         assertThat(env).isNotNull();
         LOG.info("Dynamic keys loaded from .env + OS env: {}", env.keySet());
 
-        // Fetch dynamic variables without any pre-defined class fields
-        String rtspUrl = env.get("CCTV_RTSP_URL");
-        String bufferDir = env.get("CCTV_BUFFER_DIR");
-        String customKey = env.get("CUSTOM_DYNAMIC_TEST_KEY");
+        // Deterministic assertion: parse a temporary .env file instead of relying on a
+        // developer-local .env (CI runners have none).
+        java.nio.file.Path tmp = java.nio.file.Files.createTempFile("dotenv-test", ".env");
+        java.nio.file.Files.writeString(tmp,
+                "# test fixture\n"
+                        + "CCTV_RTSP_URL=rtsp://admin:secret@10.0.1.20:554/stream1\n"
+                        + "CUSTOM_DYNAMIC_TEST_KEY=hello_from_test\n");
+        Map<String, String> parsed = DotEnv.loadFile(tmp);
+        java.nio.file.Files.deleteIfExists(tmp);
+
+        String rtspUrl = parsed.get("CCTV_RTSP_URL");
+        String customKey = parsed.get("CUSTOM_DYNAMIC_TEST_KEY");
 
         LOG.info("Retrieved CCTV_RTSP_URL dynamically: {}", rtspUrl);
-        LOG.info("Retrieved CCTV_BUFFER_DIR dynamically: {}", bufferDir);
         LOG.info("Retrieved CUSTOM_DYNAMIC_TEST_KEY dynamically: {}", customKey);
 
         assertThat(rtspUrl).isNotNull();
         assertThat(rtspUrl).startsWith("rtsp://");
-        assertThat(customKey).isEqualTo("hello_cindy_from_env");
+        assertThat(customKey).isEqualTo("hello_from_test");
     }
 
     @Test

@@ -3,6 +3,7 @@ import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
+import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -27,6 +28,9 @@ public class RealCmdTest {
 
     @Test
     public void testHello() throws IOException, InterruptedException {
+        Assumptions.assumeTrue(isFfmpegAvailable(),
+                "ffmpeg is not installed on this host - skipping real recording test");
+
         logger.info("Hello Test executed successfully.");
            Map<String, String> env = DotEnv.load();
 
@@ -60,6 +64,26 @@ public class RealCmdTest {
         boolean stopped = executor.stopGracefully(5);
 
         logger.info("FFmpeg 优雅停机完成: {}, 退出码: {}", stopped, executor.exitValue().orElse(-1));
+    }
+
+    /**
+     * Probes whether the {@code ffmpeg} binary is present on this host.
+     * CI runners (ubuntu-latest) do not ship ffmpeg, so this integration-style
+     * test must self-skip instead of failing the whole build.
+     */
+    private static boolean isFfmpegAvailable() {
+        try {
+            Process p = new ProcessBuilder("ffmpeg", "-version")
+                    .redirectErrorStream(true)
+                    .start();
+            p.getInputStream().readAllBytes();
+            return p.waitFor() == 0;
+        } catch (IOException e) {
+            return false;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
 }
