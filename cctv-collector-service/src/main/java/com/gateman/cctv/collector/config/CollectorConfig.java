@@ -77,4 +77,37 @@ public interface CollectorConfig {
      */
     @WithDefault("60")
     int maxReconnectDelaySeconds();
+
+    /**
+     * RTSP/AVIO socket read-write timeout in seconds passed to FFmpeg ({@code -timeout} / {@code -rw_timeout}).
+     * <p>
+     * <b>Why this exists:</b> without an explicit socket timeout, a silently-dead RTSP session
+     * (camera Wi-Fi dropout, AP de-auth, camera-side session reclaim) leaves FFmpeg blocked in read()
+     * forever: the OS process stays alive, zero frames arrive, and it never exits — so the supervisor
+     * never gets a chance to reconnect. With this timeout FFmpeg exits with an error within N seconds
+     * and the normal reconnect/backoff path takes over.
+     * Mapped from {@code cctv.rtsp-io-timeout-seconds} or environment variable {@code CCTV_RTSP_IO_TIMEOUT_SECONDS}.
+     */
+    @WithDefault("15")
+    int rtspIoTimeoutSeconds();
+
+    /**
+     * In-process stall watchdog threshold in seconds.
+     * <p>
+     * If no frame progress is observed for this long, the supervisor restarts <b>only the FFmpeg child
+     * process</b> (seconds to recover, container untouched, no K8s CrashLoopBackOff).
+     * Mapped from {@code cctv.stall-restart-seconds} or environment variable {@code CCTV_STALL_RESTART_SECONDS}.
+     */
+    @WithDefault("90")
+    int stallRestartSeconds();
+
+    /**
+     * Stall threshold in seconds that marks the liveness probe DOWN (last-resort backstop).
+     * <p>
+     * Deliberately larger than {@link #stallRestartSeconds()}: the in-process watchdog should heal the
+     * stream first, and only escalate to a full Pod restart if that did not help.
+     * Mapped from {@code cctv.stall-liveness-seconds} or environment variable {@code CCTV_STALL_LIVENESS_SECONDS}.
+     */
+    @WithDefault("180")
+    int stallLivenessSeconds();
 }

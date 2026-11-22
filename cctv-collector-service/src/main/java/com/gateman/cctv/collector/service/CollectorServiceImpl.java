@@ -22,7 +22,6 @@ import java.util.Optional;
 public class CollectorServiceImpl implements CollectorService {
 
     private static final Logger LOG = Logger.getLogger(CollectorServiceImpl.class);
-    private static final long STREAM_STALL_TIMEOUT_MILLIS = 60_000L;
 
     private final CollectorConfig config;
     private final DiskHealthChecker diskChecker;
@@ -86,8 +85,10 @@ public class CollectorServiceImpl implements CollectorService {
 
     @Override
     public boolean isHealthy() {
-        // Stream is considered healthy if supervisor is running and not stalled for over 60s
-        return supervisor.isRunning() && !healthTracker.isStreamStalled(STREAM_STALL_TIMEOUT_MILLIS);
+        // Liveness backstop: only DOWN after the in-process stall watchdog has had a chance to heal the
+        // stream (stallRestartSeconds < stallLivenessSeconds). This keeps liveness as a last resort instead
+        // of the primary recovery mechanism, so a transient Wi-Fi hiccup no longer causes Pod churn.
+        return supervisor.isRunning() && !healthTracker.isStreamStalled(config.stallLivenessSeconds() * 1000L);
     }
 
     @Override

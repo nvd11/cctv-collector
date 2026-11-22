@@ -70,8 +70,9 @@ class StreamHealthTrackerTest {
     @Test
     @DisplayName("Should detect stream stall when elapsed time exceeds timeout")
     void shouldDetectStreamStall() throws InterruptedException {
-        // Case 1: not running -> not stalled
-        assertThat(tracker.isStreamStalled(100)).isFalse();
+        // Case 1: supervisor not running -> treated as stalled. A stopped supervisor means nothing is being
+        // recorded, so "not stalled" used to mask a dead collector from /q/health/live.
+        assertThat(tracker.isStreamStalled(100)).isTrue();
 
         // Case 2: running but no frame yet -> not stalled (startup grace period)
         tracker.setRunning(true);

@@ -50,6 +50,13 @@ public final class FFmpegCommandBuilder {
         args.add("info");
         args.add("-rtsp_transport");
         args.add("tcp");
+        // Socket-level IO timeout (microseconds): a silently dead TCP session must surface as an FFmpeg
+        // error within seconds instead of blocking read() forever.
+        long ioTimeoutMicros = (long) config.rtspIoTimeoutSeconds() * 1_000_000L;
+        args.add("-rw_timeout");
+        args.add(String.valueOf(ioTimeoutMicros));
+        args.add("-timeout");
+        args.add(String.valueOf(ioTimeoutMicros));
         args.add("-i");
         args.add(config.rtspUrl());
         args.add("-c");
