@@ -101,6 +101,9 @@ public class FFmpegProcessSupervisor {
             this.watchdogThread = Thread.ofVirtual()
                     .name("cctv-watchdog")
                     .start(this::supervisorLoop);
+            Thread.ofVirtual()
+                    .name("cctv-stall-watchdog")
+                    .start(this::stallWatchLoop);
             LOG.info("FFmpegProcessSupervisor watchdog thread started.");
         }
     }
@@ -178,6 +181,17 @@ public class FFmpegProcessSupervisor {
                 try {
                     exitCode = executor.waitFor();
                 } catch (InterruptedException e) {
+                    if (shouldRun.get()) {
+                        // Manual /api/restart (or an internal respawn request): the interrupt means
+                        // "kill the child and spawn a new one", NOT "stop supervising". The old code broke
+                        // out of the loop here, which permanently disabled the watchdog after any manual
+                        // restart (observed 2026-11-22: "Supervisor watchdog loop finished." right after
+                        // POST /api/restart, stream then ran unsupervised forever).
+                        Thread.interrupted();
+                        backoffAttempt = 0;
+                        LOG.info("Respawning FFmpeg after restart request; supervisor loop stays alive.");
+                        continue;
+                    }
                     Thread.currentThread().interrupt();
                     LOG.info("Watchdog thread interrupted during waitFor(). Exiting loop.");
                     break;
@@ -203,9 +217,46 @@ public class FFmpegProcessSupervisor {
             }
         } finally {
             loopActive.set(false);
+            // Keep the flag consistent with reality. Old code left shouldRun == true after the loop exited,
+            // so isRunning() lied and /q/health/live happily reported UP on a collector that had stopped
+            // recording (observed 2026-11-22: 198s of zero frames, health UP, liveness never fired).
+            shouldRun.set(false);
             healthTracker.setRunning(false);
             LOG.info("Supervisor watchdog loop finished.");
         }
+    }
+
+    /**
+     * In-process stall watchdog (primary recovery path).
+     * <p>
+     * Detects the "zombie stream" state where the FFmpeg OS process is still alive but no frames have
+     * arrived for {@code cctv.stall-restart-seconds} (camera Wi-Fi dropout, AP de-auth, silently reclaimed
+     * RTSP session). It restarts <b>only the FFmpeg child process</b> — the container keeps running, so
+     * recovery takes seconds instead of triggering K8s CrashLoopBackOff.
+     * <p>
+     * The liveness probe ({@code cctv.stall-liveness-seconds}) remains a deliberately slower backstop in
+     * case this watchdog itself cannot recover the stream.
+     */
+    private void stallWatchLoop() {
+        final long intervalMillis = 10_000L;
+        final long stallMillis = config.stallRestartSeconds() * 1000L;
+        LOG.infof("Stall watchdog started (restart after %ds without frames; liveness backstop at %ds).",
+                config.stallRestartSeconds(), config.stallLivenessSeconds());
+
+        while (shouldRun.get()) {
+            sleepWithInterruption(intervalMillis);
+            if (!shouldRun.get()) {
+                break;
+            }
+            if (healthTracker.isStreamStalled(stallMillis)) {
+                LOG.warnf("Stall watchdog: no frame progress for over %ds — restarting the FFmpeg child only "
+                        + "(container stays alive).", config.stallRestartSeconds());
+                // Terminating the child makes waitFor() return, so the supervisor loop respawns it
+                // through the normal (backoff-capped) path.
+                executor.stopGracefully(3L);
+            }
+        }
+        LOG.info("Stall watchdog stopped.");
     }
 
     /**

@@ -98,7 +98,11 @@ public class StreamHealthTracker {
      */
     public boolean isStreamStalled(long timeoutMillis) {
         if (!this.running.get()) {
-            return false;
+            // Supervisor / stream is not running at all: nothing is being recorded, so the stream must be
+            // treated as stalled. Returning false here (old behaviour) made a dead collector report
+            // /q/health/live = UP, which disabled the liveness backstop entirely
+            // (observed 2026-11-22: running=false, alive=false, health UP, 198s with zero frames).
+            return true;
         }
 
         long lastTs = this.lastFrameTimestamp.get();
