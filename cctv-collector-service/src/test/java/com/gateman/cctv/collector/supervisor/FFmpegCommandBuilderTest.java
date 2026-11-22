@@ -27,7 +27,6 @@ class FFmpegCommandBuilderTest {
                 "-hide_banner",
                 "-loglevel", "info",
                 "-rtsp_transport", "tcp",
-                "-rw_timeout", "15000000",
                 "-timeout", "15000000",
                 "-i", "rtsp://admin:pass123@10.0.1.20:554/stream1",
                 "-c", "copy",

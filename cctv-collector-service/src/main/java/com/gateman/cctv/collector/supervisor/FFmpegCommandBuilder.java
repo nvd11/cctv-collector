@@ -52,9 +52,10 @@ public final class FFmpegCommandBuilder {
         args.add("tcp");
         // Socket-level IO timeout (microseconds): a silently dead TCP session must surface as an FFmpeg
         // error within seconds instead of blocking read() forever.
+        // NOTE: only -timeout is used. -rw_timeout is an AVIO-level option that this image's FFmpeg
+        // (5.1.9-0+deb12u1) rejects with "Option rw_timeout not found", which made FFmpeg exit instantly
+        // and loop through the reconnect backoff (regression observed on 2026-11-22 right after rollout).
         long ioTimeoutMicros = (long) config.rtspIoTimeoutSeconds() * 1_000_000L;
-        args.add("-rw_timeout");
-        args.add(String.valueOf(ioTimeoutMicros));
         args.add("-timeout");
         args.add(String.valueOf(ioTimeoutMicros));
         args.add("-i");
